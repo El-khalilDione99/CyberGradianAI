@@ -1,0 +1,185 @@
+services:
+
+  # ── Bus d'événements : Redpanda (compatible Kafka) ──────
+  redpanda:
+    image: redpandadata/redpanda:v23.3.11
+    container_name: cg_redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "19092:9092"   # hôte 19092 → conteneur 9092
+      - "19644:9644"   # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Création des topics au démarrage ────────────────────
+  redpanda-init:
+    image: redpandadata/redpanda:v23.3.11
+    container_name: cg_redpanda_init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+        rpk topic create sim-events    --brokers redpanda:9092 --partitions 3 --replicas 1 &&
+        rpk topic create transactions  --brokers redpanda:9092 --partitions 3 --replicas 1 &&
+        rpk topic create otp-events    --brokers redpanda:9092 --partitions 3 --replicas 1 &&
+        echo 'Topics crees avec succes'
+      "
+    restart: "no"
+
+  # ── Feature store online : Redis ────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: cg_redis
+    ports:
+      - "16379:6379"   # hôte 16379 → conteneur 6379
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Base de données relationnelle : PostgreSQL ──────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: cg_postgres
+    environment:
+      POSTGRES_USER: cyberguardian
+      POSTGRES_PASSWORD: cyberguardian_dev
+      POSTGRES_DB: cyberguardian
+    ports:
+      - "15432:5432"   # hôte 15432 → conteneur 5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberguardian"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Stockage objets local : MinIO (remplace S3) ─────────
+  minio:
+    image: minio/minio:RELEASE.2024-04-06T05-26-02Z
+    container_name: cg_minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "19000:9000"   # hôte 19000 → conteneur 9000
+      - "19002:9001"   # Console web MinIO : http://localhost:19002
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Création des buckets MinIO au démarrage ─────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: cg_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin123 &&
+        mc mb --ignore-existing local/cg-datasets &&
+        mc mb --ignore-existing local/cg-models &&
+        mc mb --ignore-existing local/cg-reports &&
+        echo 'Buckets MinIO crees'
+      "
+    restart: "no"
+
+  # ── Feature updater : consomme Kafka, écrit Redis ───────
+  feature-updater:
+    build:
+      context: .
+      dockerfile: engine/features/Dockerfile
+    container_name: cg_feature_updater
+    environment:
+      - ENV=local
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_DSN=postgresql://cyberguardian:cyberguardian_dev@postgres:5432/cyberguardian
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── API de scoring : FastAPI + moteur 3 couches ─────────
+  scoring-api:
+    build:
+      context: .
+      dockerfile: engine/scoring_api/Dockerfile
+    container_name: cg_scoring_api
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - POSTGRES_DSN=postgresql://cyberguardian:cyberguardian_dev@postgres:5432/cyberguardian
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - RULES_PATH=/app/engine/rules/rules.yaml
+      - SCORE_THRESHOLD_LOW=30
+      - SCORE_THRESHOLD_MED=70
+      - SCORE_THRESHOLD_HIGH=90
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+    volumes:
+      - ./engine/rules:/app/engine/rules:ro
+
+  # ── Simulateur (démarrable à la demande) ────────────────
+  simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    container_name: cg_simulator
+    environment:
+      - ENV=local
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NB_SUBSCRIBERS=500
+      - SEED=42
+      - ATTACK_RATIO=0.05
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    profiles:
+      - simulator
+
+volumes:
+  redpanda_data:
+  redis_data:
+  postgres_data:
+  minio_data:
