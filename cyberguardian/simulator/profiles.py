@@ -1,103 +1,98 @@
 """
 simulator/profiles.py
 ─────────────────────
-Profils comportementaux par abonné.
+Profils comportementaux initiaux par compte.
 Stocké dans Redis (local) / DynamoDB (AWS).
+Mis à jour en continu par le Feature Updater (IA-3).
 """
 
 from datetime import datetime, timezone
-from simulator.subscribers import Subscriber
+from simulator.subscribers import Compte
 from interfaces.store import get_feature_store
 
 
-def build_initial_profile(sub: Subscriber) -> dict:
+def build_initial_profile(compte: Compte) -> dict:
     """
-    Construit le profil initial d'un abonné.
-    Les compteurs démarrent à zéro — mis à jour par le feature-updater.
+    Construit le profil initial à partir du modèle Compte.
+    Tous les compteurs démarrent à zéro — le Feature Updater
+    les met à jour à chaque événement consommé.
     """
     return {
-        # ── Identité (anonymisée) ──────────────────────────
-        "identifiant": sub.identifiant,
-        "region": sub.region,
-        "segment": sub.segment,
+        # ── Identité ───────────────────────────────────────────
+        "id_compte":          compte.id_compte,
+        "region":             compte.region,
+        "segment":            compte.segment,
+        "date_creation":      compte.date_creation_compte.isoformat(),
 
-        # ── Géographie habituelle ──────────────────────────
-        "antenne_domicile": sub.antenne_domicile,
+        # ── Géographie ─────────────────────────────────────────
+        "antenne_domicile":   compte.antenne_domicile,
+        "antennes_connues":   [compte.antenne_domicile],  # enrichi par le feature updater
 
-        # ── Appareils ──────────────────────────────────────
-        "appareils_connus": sub.appareils,
-        "dernier_appareil": sub.appareils[0] if sub.appareils else None,
+        # ── SIM ────────────────────────────────────────────────
+        "iccid_actuel":       compte.iccid_actuel,
+        "imsi_actuel":        compte.imsi_actuel,
+        "ts_dernier_swap":    None,
+        "nb_swaps_30j":       0,
 
-        # ── Bénéficiaires ──────────────────────────────────
-        "beneficiaires_connus": sub.beneficiaires_connus,
+        # ── Appareils ──────────────────────────────────────────
+        "device_id_habituel": compte.device_id_habituel,
+        "devices_connus":     [compte.device_id_habituel],
 
-        # ── SIM ────────────────────────────────────────────
-        "ts_dernier_swap": None,
-        "nb_swaps_30j": 0,
+        # ── Bénéficiaires ──────────────────────────────────────
+        "beneficiaires_connus": compte.beneficiaires_habituels,
 
-        # ── Statistiques Welford ───────────────────────────
-        "nb_transactions": 0,
-        "montant_moyen": 0.0,
-        "montant_m2_welford": 0.0,
+        # ── Statistiques Welford (moyenne/variance en ligne) ───
+        "nb_transactions":       0,
+        "montant_moyen":         compte.montant_moyen_habituel,   # amorçage
+        "montant_m2_welford":    compte.ecart_type_montant ** 2,  # amorçage variance
+        "ecart_type_montant":    compte.ecart_type_montant,
 
-        # ── Vélocité ───────────────────────────────────────
-        "nb_tx_1h": 0,
-        "nb_tx_24h": 0,
-        "nb_tx_7j": 0,
-        "total_montant_24h": 0.0,
-        "fenetre_1h_ts": [],
-        "fenetre_24h_ts": [],
+        # ── Vélocité (fenêtres glissantes) ─────────────────────
+        "nb_tx_1h":           0,
+        "nb_tx_24h":          0,
+        "nb_tx_7j":           0,
+        "total_montant_24h":  0.0,
+        "fenetre_1h_ts":      [],
+        "fenetre_24h_ts":     [],
 
-        # ── OTP ────────────────────────────────────────────
-        "nb_otp_1h": 0,
-        "nb_otp_24h": 0,
+        # ── OTP ────────────────────────────────────────────────
+        "nb_otp_1h":          0,
+        "nb_otp_24h":         0,
+        "fenetre_otp_1h_ts":  [],
 
-        # ── Comportement typique ───────────────────────────
-        "montant_min_habituel": sub.montant_min_habituel,
-        "montant_max_habituel": sub.montant_max_habituel,
-        "heures_actives": sub.heures_actives,
+        # ── Comportement typique (amorçage depuis le profil) ───
+        "montant_moyen_habituel": compte.montant_moyen_habituel,
+        "heures_actives":         compte.heures_actives,
 
-        # ── Solde ──────────────────────────────────────────
-        "solde": sub.solde,
+        # ── Solde ──────────────────────────────────────────────
+        "solde":              round(compte.solde, 2),
 
-        # ── Méta ───────────────────────────────────────────
-        "cree_le": datetime.now(timezone.utc).isoformat(),
-        "mis_a_jour_le": datetime.now(timezone.utc).isoformat(),
+        # ── Méta ───────────────────────────────────────────────
+        "cree_le":            datetime.now(timezone.utc).isoformat(),
+        "mis_a_jour_le":      datetime.now(timezone.utc).isoformat(),
     }
 
 
-def init_profiles(subscribers: list[Subscriber], verbose: bool = True) -> None:
+def init_profiles(comptes: list[Compte], verbose: bool = True) -> None:
     """
-    Écrit le profil initial dans le feature store.
-    Idempotent : n'écrase pas un profil existant.
+    Écrit le profil initial de tous les comptes dans le feature store.
+    Idempotent : ne réécrit pas un profil existant.
     """
     store = get_feature_store()
-    crees = 0
-    ignores = 0
-
-    for sub in subscribers:
-        existant = store.get_profile(sub.identifiant)
-        if existant:
+    crees, ignores = 0, 0
+    for compte in comptes:
+        if store.get_profile(compte.id_compte):
             ignores += 1
             continue
-        profil = build_initial_profile(sub)
-        store.set_profile(sub.identifiant, profil)
+        store.set_profile(compte.id_compte, build_initial_profile(compte))
         crees += 1
-
     if verbose:
-        print(f"Profils initialisés : {crees} créés, {ignores} déjà existants")
+        print(f"Profils : {crees} créés, {ignores} déjà existants")
 
 
-def reset_profiles(subscribers: list[Subscriber]) -> None:
-    """Remet à zéro tous les profils (démo rejouable)."""
+def reset_profiles(comptes: list[Compte]) -> None:
+    """Réinitialise tous les profils (utile avant une démo rejouable)."""
     store = get_feature_store()
-    for sub in subscribers:
-        profil = build_initial_profile(sub)
-        store.set_profile(sub.identifiant, profil)
-    print(f"{len(subscribers)} profils réinitialisés")
-
-
-if __name__ == "__main__":
-    from simulator.subscribers import generate_subscribers
-    subs = generate_subscribers(500, seed=42)
-    init_profiles(subs)
+    for compte in comptes:
+        store.set_profile(compte.id_compte, build_initial_profile(compte))
+    print(f"{len(comptes)} profils réinitialisés")

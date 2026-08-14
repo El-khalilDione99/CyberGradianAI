@@ -1,163 +1,183 @@
 """
 simulator/subscribers.py
 ────────────────────────
-Génération de 500 abonnés réalistes sénégalais.
+Génération des 500 comptes abonnés simulés.
 
-Chaque abonné a :
-  - un identifiant uniquement (jamais le numéro en clair)
-  - un ou plusieurs appareils (IMEI)
-  - une région géographique
-  - une antenne habituelle (antenne_domicile)
-  - un segment de revenus (détermine les montants habituels)
-  - un seed fixe → résultats reproductibles
+Modèle Compte :
+  - id_compte       : hash SHA256 du msisdn (jamais le numéro en clair)
+  - iccid_actuel    : numéro de série SIM physique (19 chiffres)
+  - imsi_actuel     : identifiant réseau SIM (15 chiffres)
+  - montant_moyen   : tiré d'une loi log-normale (réaliste)
+  - ecart_type      : dispersion autour du montant moyen
+  - region          : région sénégalaise
+  - antenne_domicile: antenne habituelle de résidence
+  - device_id       : identifiant appareil principal
+  - solde           : solde initial
+  - date_creation   : date d'ouverture du compte
 """
 
 import hashlib
 import random
+import string
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
-# ── Régions sénégalaises ─────────────────────────────────────
+import numpy as np
 
-REGIONS = [
-    "Dakar", "Thiès", "Diourbel", "Saint-Louis", "Louga",
-    "Fatick", "Kaolack", "Kolda", "Ziguinchor", "Tambacounda",
-    "Kédougou", "Sédhiou", "Kaffrine", "Matam",
-]
+from simulator.config import (
+    SEED, NB_ABONNES, PREFIXES_ORANGE, SEGMENTS,
+    ANTENNES_PAR_REGION, REGIONS, HEURES_ACTIVES,
+    get_date_debut, DUREE_SIMULATION_JOURS,
+)
 
-# Antennes par région (format : REGION-ANT-XXX)
-ANTENNAS_BY_REGION: dict[str, list[str]] = {
-    region: [f"{region.upper()[:3]}-ANT-{i:03d}" for i in range(1, n + 1)]
-    for region, n in [
-        ("Dakar", 6), ("Thiès", 4), ("Diourbel", 3), ("Saint-Louis", 4),
-        ("Louga", 3), ("Fatick", 3), ("Kaolack", 4), ("Kolda", 3),
-        ("Ziguinchor", 3), ("Tambacounda", 3), ("Kédougou", 3),
-        ("Sédhiou", 3), ("Kaffrine", 3), ("Matam", 3),
-    ]
-}
 
-# Préfixes Orange Sénégal
-PREFIXES_ORANGE = ["77", "78", "76", "70"]
+# ── Helpers ──────────────────────────────────────────────────
 
-# Segments de revenus → montants habituels en FCFA
-SEGMENTS = {
-    "bas":   {"min": 500,    "max": 10_000,  "weight": 0.45},
-    "moyen": {"min": 5_000,  "max": 75_000,  "weight": 0.40},
-    "haut":  {"min": 25_000, "max": 500_000, "weight": 0.15},
-}
+def _hacher_msisdn(msisdn: str) -> str:
+    """Hash SHA256 du msisdn — jamais stocké en clair."""
+    return "CPT-" + hashlib.sha256(msisdn.encode()).hexdigest()[:12]
 
-# Soldes initiaux par segment (FCFA)
-SOLDES_PAR_SEGMENT = {
-    "bas":   {"min": 1_000,   "max": 50_000},
-    "moyen": {"min": 20_000,  "max": 300_000},
-    "haut":  {"min": 100_000, "max": 2_000_000},
-}
 
+def _generer_iccid(rng: random.Random) -> str:
+    """ICCID : 19 chiffres (numéro de série SIM physique)."""
+    return "".join([str(rng.randint(0, 9)) for _ in range(19)])
+
+
+def _generer_imsi(rng: random.Random) -> str:
+    """IMSI : 15 chiffres (identifiant réseau SIM)."""
+    # Préfixe Sénégal : 608 (Orange) + 12 chiffres
+    return "608" + "".join([str(rng.randint(0, 9)) for _ in range(12)])
+
+
+def _generer_device_id(rng: random.Random) -> str:
+    """Identifiant appareil : DEV- + 8 caractères hex."""
+    return "DEV-" + "".join(rng.choices(string.hexdigits[:16], k=8)).upper()
+
+
+def _montant_lognormal(rng: random.Random, mu: float, sigma: float) -> float:
+    """Tire un montant depuis une loi log-normale."""
+    return float(np.random.default_rng(rng.randint(0, 2**31)).lognormal(mu, sigma))
+
+
+# ── Modèle Compte ────────────────────────────────────────────
 
 @dataclass
-class Subscriber:
-    identifiant: str          # SHA256(msisdn)[:16] — jamais le numéro en clair
-    region: str
-    antenne_domicile: str     # antenne habituelle de résidence
-    segment: str              # "bas" | "moyen" | "haut"
-    appareils: list[str]      # liste d'IMEIs (1 à 3)
-    montant_min_habituel: int # montant minimum habituel (FCFA)
-    montant_max_habituel: int # montant maximum habituel (FCFA)
-    solde: int                # solde courant simulé (FCFA)
-    heures_actives: list[int] = field(default_factory=list)
-    beneficiaires_connus: list[str] = field(default_factory=list)
+class Compte:
+    id_compte:             str           # CPT-<hash12> — jamais le msisdn
+    iccid_actuel:          str           # numéro de série SIM (19 chiffres)
+    imsi_actuel:           str           # identifiant réseau SIM (15 chiffres)
+    region:                str           # région sénégalaise
+    antenne_domicile:      str           # antenne habituelle de résidence
+    segment:               str           # bas | moyen | haut
+    device_id_habituel:    str           # DEV-<hex8>
+    montant_moyen_habituel: float        # montant moyen en XOF (loi log-normale)
+    ecart_type_montant:    float         # dispersion des montants
+    solde:                 float         # solde courant (XOF)
+    date_creation_compte:  date          # date d'ouverture du compte
+    heures_actives:        list[int]     = field(default_factory=list)
+    beneficiaires_habituels: list[str]   = field(default_factory=list)  # id_compte des bénéficiaires
 
     def to_dict(self) -> dict:
         return {
-            "identifiant": self.identifiant,
-            "region": self.region,
-            "antenne_domicile": self.antenne_domicile,
-            "segment": self.segment,
-            "appareils": self.appareils,
-            "montant_min_habituel": self.montant_min_habituel,
-            "montant_max_habituel": self.montant_max_habituel,
-            "solde": self.solde,
-            "heures_actives": self.heures_actives,
-            "beneficiaires_connus": self.beneficiaires_connus,
+            "id_compte":              self.id_compte,
+            "iccid_actuel":           self.iccid_actuel,
+            "imsi_actuel":            self.imsi_actuel,
+            "region":                 self.region,
+            "antenne_domicile":       self.antenne_domicile,
+            "segment":                self.segment,
+            "device_id_habituel":     self.device_id_habituel,
+            "montant_moyen_habituel": round(self.montant_moyen_habituel, 2),
+            "ecart_type_montant":     round(self.ecart_type_montant, 2),
+            "solde":                  round(self.solde, 2),
+            "date_creation_compte":   self.date_creation_compte.isoformat(),
+            "heures_actives":         self.heures_actives,
+            "beneficiaires_habituels": self.beneficiaires_habituels,
         }
 
 
-def _hacher_msisdn(msisdn: str) -> str:
-    """On hache immédiatement — le numéro en clair n'est jamais stocké."""
-    return hashlib.sha256(msisdn.encode()).hexdigest()[:16]
+# ── Génération ───────────────────────────────────────────────
 
-
-def _generer_imei(rng: random.Random) -> str:
-    """Génère un IMEI fictif de 15 chiffres."""
-    return "".join([str(rng.randint(0, 9)) for _ in range(15)])
-
-
-def generate_subscribers(n: int = 500, seed: int = 42) -> list[Subscriber]:
+def generate_subscribers(n: int = NB_ABONNES, seed: int = SEED) -> list[Compte]:
     """
-    Génère n abonnés réalistes avec seed fixe.
+    Génère n comptes abonnés réalistes avec seed fixe.
+    Le msisdn est haché immédiatement — jamais conservé en clair.
     Seeds fixées → démo rejouable à l'identique.
-    Le msisdn est haché immédiatement et jamais conservé.
     """
     rng = random.Random(seed)
-    abonnes = []
+    np.random.seed(seed)
+    comptes = []
 
     noms_segments = list(SEGMENTS.keys())
     poids_segments = [SEGMENTS[s]["weight"] for s in noms_segments]
 
+    date_debut = get_date_debut().date()
+
     for i in range(n):
-        # Générer et hacher immédiatement le MSISDN
+        # Msisdn → haché immédiatement
         prefix = rng.choice(PREFIXES_ORANGE)
         numero = "".join([str(rng.randint(0, 9)) for _ in range(7)])
-        identifiant = _hacher_msisdn(f"221{prefix}{numero}")
+        id_compte = _hacher_msisdn(f"221{prefix}{numero}")
 
         # Géographie
         region = rng.choice(REGIONS)
-        antenne_domicile = rng.choice(ANTENNAS_BY_REGION[region])
+        antenne_domicile = rng.choice(ANTENNES_PAR_REGION[region])
 
         # Segment de revenus
         segment = rng.choices(noms_segments, weights=poids_segments, k=1)[0]
-        donnees_seg = SEGMENTS[segment]
-        donnees_solde = SOLDES_PAR_SEGMENT[segment]
+        seg = SEGMENTS[segment]
 
-        # Montants habituels
-        montant_min = rng.randint(donnees_seg["min"], donnees_seg["min"] * 3)
-        montant_max = rng.randint(donnees_seg["max"] // 2, donnees_seg["max"])
+        # Montant moyen log-normal
+        montant_moyen = max(500.0, _montant_lognormal(rng, seg["mu"], seg["sigma"]))
+        ecart_type    = montant_moyen * rng.uniform(0.2, 0.6)
 
         # Solde initial réaliste
-        solde = rng.randint(donnees_solde["min"], donnees_solde["max"])
+        solde = rng.uniform(seg["solde_min"], seg["solde_max"])
 
-        # Appareils (1 à 3, la plupart n'en ont qu'un)
-        nb_appareils = rng.choices([1, 2, 3], weights=[0.75, 0.20, 0.05], k=1)[0]
-        appareils = [_generer_imei(rng) for _ in range(nb_appareils)]
+        # SIM
+        iccid = _generer_iccid(rng)
+        imsi  = _generer_imsi(rng)
 
-        # Horaires actifs
-        heure_base = rng.randint(7, 20)
-        etendue = rng.randint(3, 6)
-        heures_actives = list(range(heure_base, min(heure_base + etendue, 23)))
+        # Appareil
+        device_id = _generer_device_id(rng)
 
-        abonnes.append(Subscriber(
-            identifiant=identifiant,
+        # Date de création du compte (entre 1 et 3 ans avant la simulation)
+        jours_anciennete = rng.randint(30, 1095)
+        date_creation = date_debut - timedelta(days=jours_anciennete)
+
+        # Heures actives
+        heures = HEURES_ACTIVES[segment]
+        # Sous-ensemble aléatoire des heures actives du segment
+        nb_heures = rng.randint(4, len(heures))
+        debut_h = rng.randint(0, len(heures) - nb_heures)
+        heures_actives = heures[debut_h: debut_h + nb_heures]
+
+        comptes.append(Compte(
+            id_compte=id_compte,
+            iccid_actuel=iccid,
+            imsi_actuel=imsi,
             region=region,
             antenne_domicile=antenne_domicile,
             segment=segment,
-            appareils=appareils,
-            montant_min_habituel=montant_min,
-            montant_max_habituel=montant_max,
+            device_id_habituel=device_id,
+            montant_moyen_habituel=montant_moyen,
+            ecart_type_montant=ecart_type,
             solde=solde,
+            date_creation_compte=date_creation,
             heures_actives=heures_actives,
-            beneficiaires_connus=[],
+            beneficiaires_habituels=[],
         ))
 
-    # Liens bénéficiaires réalistes (2 à 8 personnes connues)
-    tous_identifiants = [a.identifiant for a in abonnes]
-    for ab in abonnes:
-        nb = rng.randint(2, 8)
-        candidats = [h for h in tous_identifiants if h != ab.identifiant]
-        ab.beneficiaires_connus = rng.sample(candidats, min(nb, len(candidats)))
+    # Liens bénéficiaires réalistes (2 à 5 par compte)
+    tous_ids = [c.id_compte for c in comptes]
+    for compte in comptes:
+        nb = rng.randint(2, 5)
+        candidats = [cid for cid in tous_ids if cid != compte.id_compte]
+        compte.beneficiaires_habituels = rng.sample(candidats, min(nb, len(candidats)))
 
-    return abonnes
+    return comptes
 
 
 if __name__ == "__main__":
-    subs = generate_subscribers(500, seed=42)
-    print(f"{len(subs)} abonnés générés")
-    print(f"Exemple : {subs[0].to_dict()}")
+    comptes = generate_subscribers()
+    print(f"{len(comptes)} comptes générés")
+    print(f"Exemple : {comptes[0].to_dict()}")
