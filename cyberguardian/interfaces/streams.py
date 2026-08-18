@@ -52,28 +52,40 @@ class KafkaPublisher(StreamPublisher):
 
 
 class KafkaConsumer(StreamConsumer):
-    def __init__(self, group_id: str = "feature-updater") -> None:
-        self._group_id = group_id
-        self._bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    """
+    Consumer Kafka persistant — une connexion, un poll() non-bloquant.
+    Utilise poll(timeout_ms) au lieu de l'itérateur bloquant pour
+    éviter le cycle connect/disconnect à chaque appel.
+    """
 
-    def consume(self, stream: str, batch_size: int = 100) -> list[dict[str, Any]]:
+    def __init__(self, group_id: str = "feature-updater", topic: str = "") -> None:
         from kafka import KafkaConsumer as _KafkaConsumer  # type: ignore
-        consumer = _KafkaConsumer(
-            stream,
-            bootstrap_servers=self._bootstrap,
-            group_id=self._group_id,
+        bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        self._consumer = _KafkaConsumer(
+            bootstrap_servers=bootstrap,
+            group_id=group_id,
             auto_offset_reset="earliest",
             enable_auto_commit=True,
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-            consumer_timeout_ms=2000,
         )
+        if topic:
+            self._consumer.subscribe([topic])
+
+    def consume(self, stream: str, batch_size: int = 100) -> list[dict[str, Any]]:
+        # S'abonner au topic si pas encore fait
+        current = self._consumer.subscription() or set()
+        if stream not in current:
+            self._consumer.subscribe(list(current) + [stream])
+        # poll() non-bloquant : retourne immédiatement ce qui est dispo
+        records = self._consumer.poll(timeout_ms=2000, max_records=batch_size)
         messages = []
-        for msg in consumer:
-            messages.append(msg.value)
-            if len(messages) >= batch_size:
-                break
-        consumer.close()
+        for partition_records in records.values():
+            for msg in partition_records:
+                messages.append(msg.value)
         return messages
+
+    def close(self) -> None:
+        self._consumer.close()
 
 
 # ── Implémentation AWS : Kinesis ─────────────────────────────────────────────
@@ -124,7 +136,7 @@ def get_publisher() -> StreamPublisher:
     return KafkaPublisher()
 
 
-def get_consumer(group_id: str = "feature-updater") -> StreamConsumer:
+def get_consumer(group_id: str = "feature-updater", topic: str = "") -> StreamConsumer:
     if ENV == "aws":
         return KinesisConsumer()
-    return KafkaConsumer(group_id=group_id)
+    return KafkaConsumer(group_id=group_id, topic=topic)
