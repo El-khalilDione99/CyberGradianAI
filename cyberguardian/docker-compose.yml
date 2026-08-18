@@ -104,8 +104,11 @@ services:
         mc mb --ignore-existing local/cg-datasets &&
         mc mb --ignore-existing local/cg-models &&
         mc mb --ignore-existing local/cg-reports &&
-        echo 'Buckets MinIO crees'
+        mc cp /rules/rules.yaml local/cg-models/rules/rules.yaml &&
+        echo 'Buckets MinIO crees + rules.yaml uploade dans cg-models/rules/rules.yaml'
       "
+    volumes:
+      - ./engine/rules:/rules:ro
     restart: "no"
 
   # ── Feature updater : consomme Kafka, écrit Redis ───────
@@ -144,6 +147,8 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin123
       - RULES_PATH=/app/engine/rules/rules.yaml
+      - RULES_BUCKET=cg-models
+      - RULES_S3_KEY=rules/rules.yaml
       - SCORE_THRESHOLD_LOW=30
       - SCORE_THRESHOLD_MED=70
       - SCORE_THRESHOLD_HIGH=90
