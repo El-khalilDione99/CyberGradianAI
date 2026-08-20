@@ -6,7 +6,7 @@
 
 ## Le problème
 
-Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de transférer le numéro d'une victime sur une nouvelle carte SIM. Pendant les minutes qui suivent, ils interceptent tous les SMS — y compris les codes de sécurité — réinitialisent le PIN et vident le compte mobile money de la victime.
+Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de transférer le numéro d'une victime sur une nouvelle carte SIM. Pendant les minutes qui suivent, ils interceptent tous les SMS — y compris les codes de sécurité —, réinitialisent le PIN et vident le compte mobile money de la victime.
 
 **3 794 infractions de cybercriminalité** ont été recensées en 2025 au Sénégal, avec des pertes se comptant en milliards de FCFA à l'échelle du continent.
 
@@ -14,7 +14,7 @@ Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de trans
 
 ## La solution
 
-CyberGuardian AI détecte cette fraude en temps réel en croisant deux signaux que seul l'opérateur peut voir ensemble : les **événements réseau** (changement de SIM, appareil utilisé, antenne) et les **transactions mobile money**.
+CyberGuardian AI détecte cette fraude en temps réel en croisant deux signaux que seul l'opérateur peut voir ensemble : les **événements réseau** (changement de SIM, appareil utilisé, antenne relais) et les **transactions mobile money**.
 
 Quand la combinaison est suspecte, le système agit **avant que l'argent ne sorte**.
 
@@ -28,25 +28,25 @@ Quand la combinaison est suspecte, le système agit **avant que l'argent ne sort
 Transaction entrante
         │
         ▼
-┌───────────────────────┐
-│  Couche 1 — Règles    │  8 à 12 règles YAML expertes
-│  (IA-4)               │  ex: swap_recent + nouveau_appareil
-└──────────┬────────────┘
-           │
-           ▼
-┌───────────────────────┐
-│  Couche 2 — Anomalie  │  Isolation Forest + z-scores Welford
-│  (IA-5)               │  détection comportement inhabituel
-└──────────┬────────────┘
-           │
-           ▼
-┌───────────────────────┐
-│  Couche 3 — Supervisé │  XGBoost entraîné sur données labellisées
-│  (IA-6)               │  explicabilité SHAP
-└──────────┬────────────┘
-           │
-           ▼
-   Score 0-100 → PASS / CHALLENGE / BLOCK
+┌───────────────────────────────────────┐
+│  Couche 1 — Règles (IA-4)             │  10 règles YAML expertes (R01–R10)
+│  (ex: swap < 1h + ratio montant > 3)  │  Rechargement à chaud S3 / fichier
+└──────────────────┬────────────────────┘
+                   │
+                   ▼
+┌───────────────────────────────────────┐
+│  Couche 2 — Anomalie (IA-5)           │  Isolation Forest + z-scores Welford
+│  (détection comportement inhabituel)  │  Comportement hors profil
+└──────────────────┬────────────────────┘
+                   │
+                   ▼
+┌───────────────────────────────────────┐
+│  Couche 3 — Supervisé (IA-6)          │  XGBoost entraîné sur données labellisées
+│  (probabilité de fraude + SHAP)       │  Explicabilité temps réel
+└──────────────────┬────────────────────┘
+                   │
+                   ▼
+       Score 0-100 → PASS / CHALLENGE / BLOCK
 ```
 
 ### Infrastructure — Local → AWS
@@ -71,40 +71,45 @@ CyberGradianAI/
 │
 ├── cyberguardian/
 │   │
-│   ├── simulator/               # IA-1 — Simulateur de données ✅
-│   │   ├── subscribers.py       # Génération de 500 abonnés sénégalais (seed=42)
-│   │   ├── profiles.py          # Profils comportementaux → Redis / DynamoDB
-│   │   ├── scenarios.py         # 5 types de scénarios labellisés
-│   │   ├── publisher.py         # Publication dans Kafka / Kinesis
-│   │   ├── main.py              # Point d'entrée (batch | replay)
+│   ├── simulator/                    # IA-1 — Simulateur de données ✅
+│   │   ├── subscribers.py            # 500 abonnés sénégalais (seed=42)
+│   │   ├── profiles.py               # Profils comportementaux → Redis / DynamoDB
+│   │   ├── scenarios.py              # 7 scénarios (3 fraudes, 4 légitimes)
+│   │   ├── publisher.py              # Publication dans Kafka / Kinesis
+│   │   ├── main.py                   # Point d'entrée (batch | replay)
 │   │   └── Dockerfile
 │   │
 │   ├── engine/
-│   │   ├── features/            # IA-3 — Feature Updater ✅
-│   │   │   ├── updater.py       # Logique métier pure (Welford, fenêtres, sets)
-│   │   │   ├── handlers.py      # Dispatch topic → store (FeatureHandler)
-│   │   │   ├── main.py          # Boucle de consommation Kafka persistante
-│   │   │   └── Dockerfile       # Image légère (requirements-updater.txt)
-│   │   ├── rules/               # IA-4 — Règles YAML expertes (à faire)
-│   │   ├── anomaly/             # IA-5 — Isolation Forest (à faire)
-│   │   ├── supervised/          # IA-6 — XGBoost + SHAP (à faire)
-│   │   └── scoring_api/         # IA-7 — API FastAPI (à faire)
+│   │   ├── __init__.py
+│   │   ├── features/                 # IA-3 — Feature Updater ✅
+│   │   │   ├── updater.py            # Logique métier pure (Welford, fenêtres, sets)
+│   │   │   ├── handlers.py           # Dispatch topic → store (FeatureHandler)
+│   │   │   ├── main.py               # Boucle de consommation Kafka persistante
+│   │   │   └── Dockerfile            # Image légère (requirements-updater.txt)
+│   │   ├── rules/                    # IA-4 — Moteur de règles expertes ✅
+│   │   │   ├── rules.yaml            # 10 règles YAML documentées (R01–R10)
+│   │   │   ├── features.py           # Calcul des features dérivées à la volée
+│   │   │   ├── engine.py             # Évaluation + rechargement à chaud S3/fichier
+│   │   │   └── __init__.py
+│   │   ├── anomaly/                  # IA-5 — Isolation Forest (à faire)
+│   │   ├── supervised/               # IA-6 — XGBoost + SHAP (à faire)
+│   │   └── scoring_api/              # IA-7 — API FastAPI + /reload-rules (à faire)
 │   │
 │   ├── interfaces/
-│   │   ├── streams.py           # Abstraction Kafka ↔ Kinesis (consumer persistant poll())
-│   │   └── store.py             # Abstraction Redis/MinIO ↔ DynamoDB/S3
+│   │   ├── streams.py                # Abstraction Kafka ↔ Kinesis
+│   │   └── store.py                  # Abstraction Redis/MinIO ↔ DynamoDB/S3
 │   │
-│   ├── infra/                   # IA-9 — Infrastructure Terraform AWS (à faire)
+│   ├── infra/                        # IA-9 — Infrastructure Terraform AWS (à faire)
 │   │
 │   ├── docs/
-│   │   └── dictionnaire_features.md   # IA-2 — 12 features documentées ✅
+│   │   └── dictionnaire_features.md  # IA-2 — 12 features documentées ✅
 │   │
 │   ├── notebooks/
-│   │   └── 01_EDA_simulateur.ipynb    # EDA Phase 1
+│   │   └── 01_EDA_simulateur.ipynb   # EDA Phase 1
 │   │
-│   ├── docker-compose.yml             # Stack locale complète
-│   ├── requirements.txt               # Dépendances Python complètes (API + ML)
-│   ├── requirements-updater.txt       # Dépendances minimales du feature-updater
+│   ├── docker-compose.yml            # Stack locale complète
+│   ├── requirements.txt              # Dépendances Python complètes (API + ML)
+│   ├── requirements-updater.txt      # Dépendances minimales du feature-updater
 │   └── .gitignore
 │
 └── README.md
@@ -116,13 +121,13 @@ CyberGradianAI/
 
 | Tâche | Description | Statut |
 |---|---|---|
-| IA-1 | Simulateur de données (500 abonnés, scénarios labellisés) | ✅ Fait |
+| IA-1 | Simulateur (500 abonnés, 7 scénarios, 22 793 événements) | ✅ Fait |
 | IA-2 | Dictionnaire de features (12 features documentées) | ✅ Fait |
 | IA-3 | Feature Updater (Welford, fenêtres glissantes, sets) | ✅ Fait + testé Docker |
-| IA-4 | Moteur de règles YAML (8-12 règles, rechargeable S3) | ⏳ À faire |
+| IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + validé |
 | IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ⏳ À faire |
 | IA-6 | XGBoost via SageMaker + SHAP + champion/challenger | ⏳ À faire |
-| IA-7 | API de scoring FastAPI sur ECS Fargate | ⏳ À faire |
+| IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | ⏳ À faire |
 | IA-8 | Harnais d'évaluation + CI GitHub Actions | ⏳ À faire |
 | IA-9 | Socle Terraform AWS (Kinesis, DynamoDB, S3, ECS…) | ⏳ À faire |
 | IA-10 | Fiche technique 2 pages pour le jury | ⏳ À faire |
@@ -139,32 +144,35 @@ CyberGradianAI/
 | `otp-events` | `id_compte`, `motif`, `antenne`, `horodatage` | — |
 | `transactions` | `id_compte`, `montant`, `solde_avant`, `solde_apres`, `device_id`, `antenne`, `horodatage` | `0` ou `1` |
 
-### Scénarios d'attaque simulés
+### Scénarios simulés
 
 | Scénario | Description | Label |
 |---|---|---|
-| `LEGITIME` | Transaction normale dans les habitudes de l'abonné | 0 |
+| `NORMAL` | Transaction normale dans les habitudes de l'abonné | 0 |
 | `SIM_SWAP_SIMPLE` | Swap SIM + 1 gros transfert vers bénéficiaire inconnu | 1 |
 | `SIM_SWAP_CASCADE` | Swap SIM + vidage en cascade (3 à 7 transferts rapides) | 1 |
-| `NOUVEAU_APPAREIL` | Transaction depuis un nouvel appareil (voyage, nouveau téléphone) | 0 |
 | `PIC_OTP` | Pic de demandes OTP (5 à 10) suivi d'un transfert frauduleux | 1 |
+| `SWAP_LEGITIME` | Changement de SIM normal (même device, antenne locale) | 0 |
+| `NOUVEAU_DEVICE_LEGITIME` | Nouveau téléphone, comportement habituel sinon | 0 |
+| `GROS_MONTANT_LEGITIME` | Grosse transaction ponctuelle, device et bénéficiaire connus | 0 |
+| `VOYAGE_LEGITIME` | Transaction depuis une autre région, profil normal sinon | 0 |
 
 ### Politique de scoring
 
 | Score | Décision | Action |
 |---|---|---|
 | 0 – 29 | `PASS` | Transaction laissée passer |
-| 30 – 69 | `CHALLENGE` | Vérification supplémentaire |
+| 30 – 69 | `CHALLENGE` | Vérification supplémentaire (SMS / biométrie) |
 | 70 – 89 | `BLOCK` | Transaction bloquée + alerte analyste |
 | 90 – 100 | `BLOCK` | Blocage immédiat + priorité haute |
 
 ---
 
-## Démarrage rapide
+## Démarrage rapide — tester le pipeline complet
 
 ### Prérequis
 
-- Docker Desktop (avec WSL2 activé sur Windows)
+- Docker Desktop avec WSL2 activé (Windows)
 - Python 3.11+
 - Git
 
@@ -177,6 +185,8 @@ cd CyberGradianAI/cyberguardian
 
 ### 2. Démarrer l'infrastructure
 
+Lance Redpanda, Redis, PostgreSQL et MinIO. Les services `redpanda-init` et `minio-init` créent automatiquement les topics Kafka, les buckets MinIO **et uploadent `rules.yaml` dans MinIO** au démarrage.
+
 ```bash
 docker compose up redpanda redis postgres minio redpanda-init minio-init -d
 ```
@@ -185,13 +195,18 @@ Vérifier que tout est healthy :
 
 ```bash
 docker compose ps
-# Tous les services doivent afficher (healthy)
+# NAME              STATUS
+# cg_redpanda       Up X minutes (healthy)
+# cg_redis          Up X minutes (healthy)
+# cg_postgres       Up X minutes (healthy)
+# cg_minio          Up X minutes (healthy)
 ```
 
-### 3. Lancer le Feature Updater
+### 3. Construire et lancer le Feature Updater
 
 ```bash
 docker compose build feature-updater
+
 docker run -d --name cg_feature_updater \
   --network cyberguardian_default \
   -e ENV=local \
@@ -207,41 +222,90 @@ docker run -d --name cg_feature_updater \
 docker compose --profile simulator run --rm simulator --mode batch --reset-profiles
 ```
 
-### 5. Vérifier les profils dans Redis
+Le simulateur publie ~23 000 événements dans les 3 topics Kafka. Le Feature Updater les consomme et met à jour les 500 profils dans Redis.
+
+### 5. Vérifier le pipeline
 
 ```bash
-# Nombre de profils mis à jour
+# 500 profils créés dans Redis
 docker exec cg_redis redis-cli DBSIZE
 
-# Inspecter un profil (remplacer la clé par une vraie)
+# Inspecter un profil mis à jour
 docker exec cg_redis redis-cli GET "profile:CPT-<hash>"
+
+# Logs du Feature Updater (doit afficher ~28 msg/s, 0 erreur)
+docker logs cg_feature_updater --tail 20
 ```
 
-### 6. Vérifier les données dans Kafka
+Vérifier que `rules.yaml` est bien stocké dans MinIO :
+
+```bash
+docker run --rm --network cyberguardian_default \
+  --entrypoint sh minio/mc:latest -c \
+  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null \
+   && mc ls local/cg-models/ --recursive"
+```
+
+### 6. Tester le moteur de règles en Python
+
+Sans infrastructure, la logique des règles est testable directement :
+
+```bash
+cd cyberguardian
+python -c "
+from engine.rules import RuleEngine, compute_features
+from datetime import datetime, timezone
+
+engine = RuleEngine()
+print(f'Moteur chargé : {engine.rules_count} règles')
+
+# Scénario SIM_SWAP_SIMPLE
+event = {
+    'id_compte': 'CPT-test',
+    'horodatage': '2026-07-14T09:15:00+00:00',
+    'montant': 185000.0,
+    'device_id': 'DEV-ATTAQUANT',
+    'id_beneficiaire': 'BEN-INCONNU',
+    'antenne': 'MAT-ANT-002',
+}
+profile = {
+    'montant_moyen_habituel': 20000.0,
+    'montant_moyen': 21000.0,
+    'ecart_type_montant': 4000.0,
+    'devices_connus': ['DEV-HABITUEL'],
+    'beneficiaires_connus': ['CPT-connu'],
+    'antenne_domicile': 'DAK-ANT-001',
+    'ts_dernier_swap': '2026-07-14T09:00:00+00:00',
+    'nb_otp_1h': 6,
+    'nb_tx_1h': 4,
+}
+result = engine.evaluate(event, profile)
+print(f'Score : {result.score}')
+print(f'Règles : {[m.rule_id for m in result.matches]}')
+print(f'Décision : BLOCK' if result.score >= 70 else 'PASS/CHALLENGE')
+"
+```
+
+Résultat attendu : **score 93, règles R01 R02 R03 R04 R05 R06 R07 R09 R10 déclenchées**.
+
+### 7. Vérifier les données Kafka
 
 ```bash
 docker exec cg_redpanda rpk topic consume transactions \
-  --brokers localhost:9092 --num 5 --offset start --format "%v\n"
-```
-
-### 7. Lancer l'EDA
-
-```bash
-pip install -r requirements.txt
-jupyter notebook notebooks/01_EDA_simulateur.ipynb
+  --brokers localhost:9092 --num 5 --offset start --format \"%v\n\"
 ```
 
 ---
 
-## Feature Updater — fonctionnement
+## Feature Updater — fonctionnement (IA-3)
 
-Le Feature Updater (IA-3) écoute en permanence les 3 topics Kafka et met à jour les profils abonnés dans Redis. C'est la mémoire vivante du système — sans lui, le moteur de scoring n'a pas de contexte comportemental.
+Le Feature Updater écoute en permanence les 3 topics Kafka et met à jour les profils abonnés dans Redis. C'est la mémoire vivante du système — sans lui, le moteur de scoring n'a pas de contexte comportemental.
 
 ```
 Kafka topics                Redis (profil abonné)
 ──────────────              ─────────────────────
 transactions  ──┐           nb_transactions, montant_moyen (Welford)
-sim-events    ──┼──►  FU ──► ts_dernier_swap, nb_swaps_30j, iccid_actuel
+sim-events    ──┼──► FU ──► ts_dernier_swap, nb_swaps_30j, iccid_actuel
 otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
                             nb_tx_1h / nb_tx_24h / nb_tx_7j
                             devices_connus, beneficiaires_connus
@@ -251,6 +315,48 @@ otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
 **Algorithme de Welford** : moyenne et variance calculées en O(1) sans stocker l'historique des montants. Implémenté dans `engine/features/updater.py` — logique pure, testable sans infrastructure.
 
 **Performance mesurée** : ~28 msg/s, 0 erreur sur 22 793 événements simulés.
+
+---
+
+## Moteur de règles — fonctionnement (IA-4)
+
+Le moteur de règles est la Couche 1 du scoring. Il évalue 10 règles YAML contre les features calculées à la volée et retourne le score le plus élevé parmi les règles déclenchées.
+
+### Les 10 règles (R01–R10)
+
+| Règle | Nom | Logique | Score | Statut seuil |
+|---|---|---|---|---|
+| R01 | SIM swap récent + montant important | `hours_since_swap < 1h` ET `amount_ratio > 3` | 92 | EDA v3 |
+| R02 | Nouveau device + montant important | `new_device` ET `amount_ratio > 3` | 78 | EDA v3 |
+| R03 | Nouveau device après swap SIM | `new_device` ET `hours_since_swap < 2h` | 93 | EDA v3 |
+| R04 | Pic d'OTP | `otp_count_1h >= 3` | 72 | Baseline v1.0 |
+| R05 | Vélocité excessive | `nb_tx_1h >= 4` | 70 | Baseline v1.0 |
+| R06 | Montant très supérieur à l'habitude | `amount_ratio > 5` | 68 | Baseline v1.0 |
+| R07 | Changement géographique | `is_roaming == True` | 60 | Baseline v1.0 |
+| R08 | Cascade de transferts | `nb_beneficiaires_1h >= 3` ET `nb_tx_1h >= 3` | 90 | Baseline v1.0 |
+| R09 | Nouveau bénéficiaire + montant élevé | `new_beneficiary` ET `amount_ratio > 3` | 78 | EDA v3 |
+| R10 | Accumulation de signaux faibles | 3+ signaux faibles simultanés | 88 | Baseline v1.0 |
+
+> R01, R02, R03, R09 ont leurs seuils validés par l'EDA v3. Les autres (R04–R08, R10) seront recalibrés via le harnais IA-8 dès que du volume de scoring réel est disponible.
+
+### Features calculées à la volée
+
+Ces features ne sont pas stockées dans Redis — elles sont dérivées au moment du scoring depuis l'événement courant + le profil abonné :
+
+| Feature | Formule |
+|---|---|
+| `amount_ratio` | `montant / montant_moyen_habituel` |
+| `hours_since_sim_swap` | `(now - ts_dernier_swap).total_seconds() / 3600` |
+| `new_device` | `device_id not in devices_connus` |
+| `new_beneficiary` | `id_beneficiaire not in beneficiaires_connus` |
+| `is_roaming` | `antenne != antenne_domicile` |
+| `otp_count_1h` | `nb_otp_1h` (depuis le profil Redis) |
+| `zscore_montant` | `(montant - montant_moyen) / ecart_type` |
+
+### Rechargement à chaud
+
+En local : le moteur lit `engine/rules/rules.yaml` (monté comme volume).
+En AWS : si le fichier local est absent, le moteur télécharge `cg-models/rules/rules.yaml` depuis S3. L'endpoint `/reload-rules` (IA-7, à faire) déclenchera ce rechargement sans redémarrage du conteneur.
 
 ---
 
@@ -276,8 +382,13 @@ otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
 | `KAFKA_BOOTSTRAP_SERVERS` | `redpanda:9092` | Broker Kafka / Kinesis endpoint |
 | `REDIS_HOST` | `redis` | Host Redis / DynamoDB endpoint |
 | `REDIS_PORT` | `6379` | Port Redis |
+| `RULES_PATH` | `/app/engine/rules/rules.yaml` | Chemin du fichier de règles (volume local) |
+| `RULES_BUCKET` | `cg-models` | Bucket S3/MinIO contenant les règles |
+| `RULES_S3_KEY` | `rules/rules.yaml` | Clé S3 du fichier de règles |
+| `SCORE_THRESHOLD_LOW` | `30` | Seuil PASS → CHALLENGE |
+| `SCORE_THRESHOLD_MED` | `70` | Seuil CHALLENGE → BLOCK |
+| `SCORE_THRESHOLD_HIGH` | `90` | Seuil BLOCK prioritaire |
 | `FU_BATCH_SIZE` | `100` | Taille des lots Kafka pour le feature updater |
-| `FU_POLL_INTERVAL_S` | `1.0` | Pause (s) si aucun message à consommer |
 | `SEED` | `42` | Seed globale — démo rejouable à l'identique |
 
 > Aucune clé AWS statique dans le code. En production : rôles IAM attachés aux tâches ECS et OIDC pour la CI.
@@ -301,7 +412,7 @@ otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
 ## Principes non négociables
 
 - **Score mesurable** — on vend un score 0-100, pas une prédiction magique
-- **Explicabilité** — chaque décision doit être justifiable (SHAP, règles nommées)
+- **Explicabilité** — chaque décision est justifiable (règles nommées, SHAP)
 - **Agnosticisme cloud** — aucun appel boto3 dans la logique métier, tout passe par `interfaces/`
 - **Seeds fixes** — `SEED=42` partout, une démo doit être rejouable à l'identique
 - **Pas de MSK ni endpoint SageMaker permanent** — les deux pièges qui brûlent les crédits AWS
