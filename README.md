@@ -6,7 +6,7 @@
 
 ## Le problème
 
-Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de transférer le numéro d'une victime sur une nouvelle carte SIM. Pendant les minutes qui suivent, ils interceptent tous les SMS — y compris les codes de sécurité — réinitialisent le PIN et vident le compte mobile money de la victime.
+Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de transférer le numéro d'une victime sur une nouvelle carte SIM. Pendant les minutes qui suivent, ils interceptent tous les SMS — y compris les codes de sécurité —, réinitialisent le PIN et vident le compte mobile money de la victime.
 
 **3 794 infractions de cybercriminalité** ont été recensées en 2025 au Sénégal, avec des pertes se comptant en milliards de FCFA à l'échelle du continent.
 
@@ -14,7 +14,7 @@ Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de trans
 
 ## La solution
 
-CyberGuardian AI détecte cette fraude en temps réel en croisant deux signaux que seul l'opérateur peut voir ensemble : les **événements réseau** (changement de SIM, appareil utilisé, antenne) et les **transactions mobile money**.
+CyberGuardian AI détecte cette fraude en temps réel en croisant deux signaux que seul l'opérateur peut voir ensemble : les **événements réseau** (changement de SIM, appareil utilisé, antenne relais) et les **transactions mobile money**.
 
 Quand la combinaison est suspecte, le système agit **avant que l'argent ne sorte**.
 
@@ -28,29 +28,25 @@ Quand la combinaison est suspecte, le système agit **avant que l'argent ne sort
 Transaction entrante
         │
         ▼
-┌───────────────────────────────────────────┐
-│  Couche 1 — Règles expertes (IA-4)  ✅   │
-│  10 règles YAML (R01–R10)                 │
-│  Rechargement à chaud depuis S3/MinIO     │
-│  Score max parmi les règles déclenchées   │
-└──────────────────┬────────────────────────┘
+┌───────────────────────────────────────┐
+│  Couche 1 — Règles (IA-4)             │  10 règles YAML expertes (R01–R10)
+│  (ex: swap < 1h + ratio montant > 3)  │  Rechargement à chaud S3 / fichier
+└──────────────────┬────────────────────┘
                    │
                    ▼
-┌───────────────────────────────────────────┐
-│  Couche 2 — Détection d'anomalies (IA-5) │
-│  Isolation Forest + z-scores Welford      │
-│  Comportement inhabituel de l'abonné      │
-└──────────────────┬────────────────────────┘
+┌───────────────────────────────────────┐
+│  Couche 2 — Anomalie (IA-5)           │  Isolation Forest + z-scores Welford
+│  (détection comportement inhabituel)  │  Comportement hors profil
+└──────────────────┬────────────────────┘
                    │
                    ▼
-┌───────────────────────────────────────────┐
-│  Couche 3 — Modèle supervisé (IA-6)      │
-│  XGBoost entraîné sur données labellisées │
-│  Explicabilité SHAP                       │
-└──────────────────┬────────────────────────┘
+┌───────────────────────────────────────┐
+│  Couche 3 — Supervisé (IA-6)          │  XGBoost entraîné sur données labellisées
+│  (probabilité de fraude + SHAP)       │  Explicabilité temps réel
+└──────────────────┬────────────────────┘
                    │
                    ▼
-         Score 0–100 → PASS / CHALLENGE / BLOCK
+       Score 0-100 → PASS / CHALLENGE / BLOCK
 ```
 
 ### Infrastructure — Local → AWS
@@ -103,6 +99,12 @@ CyberGradianAI/
 │   │   ├── streams.py                # Abstraction Kafka ↔ Kinesis
 │   │   └── store.py                  # Abstraction Redis/MinIO ↔ DynamoDB/S3
 │   │
+│   ├── tests/                        # Suites de tests unitaires automatisés ✅
+│   │   ├── __init__.py
+│   │   ├── test_simulator.py
+│   │   ├── test_rules.py
+│   │   └── test_updater.py
+│   │
 │   ├── infra/                        # IA-9 — Infrastructure Terraform AWS (à faire)
 │   │
 │   ├── docs/
@@ -114,6 +116,7 @@ CyberGradianAI/
 │   ├── docker-compose.yml            # Stack locale complète
 │   ├── requirements.txt              # Dépendances Python complètes (API + ML)
 │   ├── requirements-updater.txt      # Dépendances minimales du feature-updater
+│   ├── .env.example                  # Modèle des variables d'environnement
 │   └── .gitignore
 │
 └── README.md
@@ -128,7 +131,7 @@ CyberGradianAI/
 | IA-1 | Simulateur (500 abonnés, 7 scénarios, 22 793 événements) | ✅ Fait |
 | IA-2 | Dictionnaire de features (12 features documentées) | ✅ Fait |
 | IA-3 | Feature Updater (Welford, fenêtres glissantes, sets) | ✅ Fait + testé Docker |
-| IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + 46/46 tests |
+| IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + validé |
 | IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ⏳ À faire |
 | IA-6 | XGBoost via SageMaker + SHAP + champion/challenger | ⏳ À faire |
 | IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | ⏳ À faire |
@@ -166,7 +169,7 @@ CyberGradianAI/
 | Score | Décision | Action |
 |---|---|---|
 | 0 – 29 | `PASS` | Transaction laissée passer |
-| 30 – 69 | `CHALLENGE` | Vérification supplémentaire |
+| 30 – 69 | `CHALLENGE` | Vérification supplémentaire (SMS / biométrie) |
 | 70 – 89 | `BLOCK` | Transaction bloquée + alerte analyste |
 | 90 – 100 | `BLOCK` | Blocage immédiat + priorité haute |
 
@@ -237,7 +240,7 @@ docker exec cg_redis redis-cli DBSIZE
 # Inspecter un profil mis à jour
 docker exec cg_redis redis-cli GET "profile:CPT-<hash>"
 
-# Logs du Feature Updater (doit afficher ~28 msg/s, 0 erreur)
+# Logs du Feature Updater (doit afficher ~300 à 530+ msg/s, 0 erreur)
 docker logs cg_feature_updater --tail 20
 ```
 
@@ -248,41 +251,6 @@ docker run --rm --network cyberguardian_default \
   --entrypoint sh minio/mc:latest -c \
   "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null \
    && mc ls local/cg-models/ --recursive"
-```
-
-Résultat attendu :
-```
-[2026-08-19 13:06:20 UTC] 7.4KiB STANDARD rules/rules.yaml
-```
-
-Si le fichier est absent (premier démarrage avant la création des règles), l'uploader manuellement :
-
-```bash
-docker run --rm --network cyberguardian_default \
-  -v "$(pwd)/engine/rules:/rules:ro" \
-  --entrypoint sh minio/mc:latest -c \
-  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null \
-   && mc cp /rules/rules.yaml local/cg-models/rules/rules.yaml \
-   && echo 'Upload OK' \
-   && mc ls local/cg-models/ --recursive"
-```
-
-> **Note Windows** : remplacer `$(pwd)` par le chemin absolu, ex :
-> `-v "c:\Users\adjie\...\cyberguardian\engine\rules:/rules:ro"`
-
-Vérifier le contenu du fichier uploadé :
-
-```bash
-docker run --rm --network cyberguardian_default \
-  --entrypoint sh minio/mc:latest -c \
-  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null \
-   && mc cat local/cg-models/rules/rules.yaml | head -5"
-```
-
-Résultat attendu :
-```
-# CyberGuardian AI — Moteur de règles (Couche 1) — IA-4
-# Version: 1.0 (baseline complète — 10/10 règles finalisées)
 ```
 
 ### 6. Tester le moteur de règles en Python
@@ -331,14 +299,14 @@ Résultat attendu : **score 93, règles R01 R02 R03 R04 R05 R06 R07 R09 R10 déc
 
 ```bash
 docker exec cg_redpanda rpk topic consume transactions \
-  --brokers localhost:9092 --num 5 --offset start --format "%v\n"
+  --brokers localhost:9092 --num 5 --offset start --format \"%v\n\"
 ```
 
 ---
 
 ## Feature Updater — fonctionnement (IA-3)
 
-Le Feature Updater écoute en permanence les 3 topics Kafka et met à jour les profils abonnés dans Redis. C'est la mémoire vivante du système — sans lui, le moteur de règles n'a pas de contexte comportemental.
+Le Feature Updater écoute en permanence les 3 topics Kafka et met à jour les profils abonnés dans Redis. C'est la mémoire vivante du système — sans lui, le moteur de scoring n'a pas de contexte comportemental.
 
 ```
 Kafka topics                Redis (profil abonné)
@@ -351,8 +319,9 @@ otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
                             solde, antennes_connues
 ```
 
-**Algorithme de Welford** : moyenne et variance en O(1) sans stocker l'historique.
-**Performance mesurée** : ~28 msg/s, 0 erreur sur 22 793 événements simulés.
+**Algorithme de Welford** : moyenne et variance calculées en O(1) sans stocker l'historique des montants. Implémenté dans `engine/features/updater.py` — logique pure, testable sans infrastructure.
+
+**Performance mesurée** : ~300 à 530+ msg/s, 0 erreur sur 23 934 événements simulés.
 
 ---
 

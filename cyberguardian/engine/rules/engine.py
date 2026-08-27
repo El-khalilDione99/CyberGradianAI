@@ -160,15 +160,22 @@ class RuleEngine:
         env = os.getenv("ENV", "local")
 
         # ── Tentative 1 : fichier local ───────────────────────
-        if os.path.isfile(RULES_PATH):
-            rules, version = self._load_from_file(RULES_PATH)
-            with self._lock:
-                self._rules       = rules
-                self._version     = version
-                self._loaded_from = f"file:{RULES_PATH}"
-            msg = f"Règles chargées depuis {RULES_PATH} (v{version}, {len(rules)} règles)"
-            logger.info(msg)
-            return msg
+        candidates = [
+            RULES_PATH,
+            os.path.join(os.path.dirname(__file__), "rules.yaml"),
+            "engine/rules/rules.yaml",
+            "cyberguardian/engine/rules/rules.yaml",
+        ]
+        for path in candidates:
+            if path and os.path.isfile(path):
+                rules, version = self._load_from_file(path)
+                with self._lock:
+                    self._rules       = rules
+                    self._version     = version
+                    self._loaded_from = f"file:{path}"
+                msg = f"Règles chargées depuis {path} (v{version}, {len(rules)} règles)"
+                logger.info(msg)
+                return msg
 
         # ── Tentative 2 : S3 / MinIO ─────────────────────────
         if env == "aws" or self._store is not None:
