@@ -132,7 +132,7 @@ CyberGradianAI/
 | IA-2 | Dictionnaire de features (12 features documentées) | ✅ Fait |
 | IA-3 | Feature Updater (Welford, fenêtres glissantes, sets) | ✅ Fait + testé Docker |
 | IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + validé |
-| IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ⏳ À faire |
+| IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ✅ Fait + validé |
 | IA-6 | XGBoost via SageMaker + SHAP + champion/challenger | ⏳ À faire |
 | IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | ⏳ À faire |
 | IA-8 | Harnais d'évaluation + CI GitHub Actions | ⏳ À faire |
