@@ -99,6 +99,12 @@ CyberGradianAI/
 │   │   ├── streams.py                # Abstraction Kafka ↔ Kinesis
 │   │   └── store.py                  # Abstraction Redis/MinIO ↔ DynamoDB/S3
 │   │
+│   ├── tests/                        # Suites de tests unitaires automatisés ✅
+│   │   ├── __init__.py
+│   │   ├── test_simulator.py
+│   │   ├── test_rules.py
+│   │   └── test_updater.py
+│   │
 │   ├── infra/                        # IA-9 — Infrastructure Terraform AWS (à faire)
 │   │
 │   ├── docs/
@@ -110,6 +116,7 @@ CyberGradianAI/
 │   ├── docker-compose.yml            # Stack locale complète
 │   ├── requirements.txt              # Dépendances Python complètes (API + ML)
 │   ├── requirements-updater.txt      # Dépendances minimales du feature-updater
+│   ├── .env.example                  # Modèle des variables d'environnement
 │   └── .gitignore
 │
 └── README.md
@@ -233,7 +240,7 @@ docker exec cg_redis redis-cli DBSIZE
 # Inspecter un profil mis à jour
 docker exec cg_redis redis-cli GET "profile:CPT-<hash>"
 
-# Logs du Feature Updater (doit afficher ~28 msg/s, 0 erreur)
+# Logs du Feature Updater (doit afficher ~300 à 530+ msg/s, 0 erreur)
 docker logs cg_feature_updater --tail 20
 ```
 
@@ -314,7 +321,7 @@ otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
 
 **Algorithme de Welford** : moyenne et variance calculées en O(1) sans stocker l'historique des montants. Implémenté dans `engine/features/updater.py` — logique pure, testable sans infrastructure.
 
-**Performance mesurée** : ~28 msg/s, 0 erreur sur 22 793 événements simulés.
+**Performance mesurée** : ~300 à 530+ msg/s, 0 erreur sur 23 934 événements simulés.
 
 ---
 
