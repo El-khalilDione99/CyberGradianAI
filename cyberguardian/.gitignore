@@ -1,69 +1,18 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
+# Pytest
 .pytest_cache/
 *.pytest_cache
-.Python
-*.egg
-*.egg-info/
-dist/
-build/
-eggs/
-parts/
-var/
-sdist/
-develop-eggs/
-.installed.cfg
-lib/
-lib64/
 
-# Environnements virtuels
-.env
-.venv
-env/
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
 venv/
-ENV/
+env/
 
-# Secrets — ne jamais committer
-*.env
-.env.*
-!.env.example
-secrets.json
-credentials.json
-*.pem
-*.key
-
-# Modèles sérialisés (versionnés dans MinIO/S3)
-*.pkl
-*.joblib
-*.model
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# Docker
-.docker/
-
-# Terraform
-infra/.terraform/
-infra/*.tfstate
-infra/*.tfstate.backup
-infra/.terraform.lock.hcl
-infra/terraform.tfvars
-
-# IDE
+# IDE & OS
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Logs
-*.log
-logs/
