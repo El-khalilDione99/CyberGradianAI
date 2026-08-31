@@ -1,4 +1,4 @@
-# CyberGuardian AI
+﻿# CyberGuardian AI
 
 > Moteur IA de détection de fraude **SIM swap** en temps réel pour le **Mobile Money au Sénégal**
 
@@ -160,75 +160,361 @@ CyberGradianAI/
 
 ---
 
-## Démarrage rapide
+## Lancer le pipeline complet avec Docker
 
-### Prérequis
+Ce guide démarre toute la stack locale, lance le Feature Updater, fait tourner le simulateur, entraîne les 3 couches IA et vérifie que tout fonctionne.
 
-- Docker Desktop (avec WSL2 activé sur Windows)
-- Python 3.11+
-- Git
+> **Prérequis** : Docker Desktop avec WSL2 activé + Python 3.11+ installé localement.
 
-### 1. Cloner le repo
+---
+
+### Étape 1 — Cloner le repo
 
 ```bash
 git clone https://github.com/El-khalilDione99/CyberGradianAI.git
 cd CyberGradianAI/cyberguardian
 ```
 
-### 2. Démarrer l'infrastructure
+---
+
+### Étape 2 — Démarrer l'infrastructure
+
+Lance Redpanda (Kafka), Redis, PostgreSQL et MinIO.
+Les services `*-init` créent automatiquement les topics Kafka, les buckets MinIO et uploadent `rules.yaml`.
 
 ```bash
 docker compose up redpanda redis postgres minio redpanda-init minio-init -d
 ```
 
-Vérifier que tout est healthy :
+Attendre ~30 secondes puis vérifier :
 
 ```bash
 docker compose ps
-# Tous les services doivent afficher (healthy)
 ```
 
-### 3. Lancer le Feature Updater
+Résultat attendu :
+```
+NAME               STATUS
+cg_redpanda        Up X minutes (healthy)
+cg_redis           Up X minutes (healthy)
+cg_postgres        Up X minutes (healthy)
+cg_minio           Up X minutes (healthy)
+cg_minio_init      Exited (0)   ← normal
+cg_redpanda_init   Exited (0)   ← normal
+```
+
+---
+
+### Étape 3 — Construire et lancer le Feature Updater (IA-3)
+
+Le Feature Updater écoute Kafka et met à jour les profils abonnés dans Redis en temps réel.
 
 ```bash
+# Construire l'image (première fois ~2-3 min)
 docker compose build feature-updater
-docker run -d --name cg_feature_updater \
-  --network cyberguardian_default \
-  -e ENV=local \
-  -e KAFKA_BOOTSTRAP_SERVERS=redpanda:9092 \
-  -e REDIS_HOST=redis \
-  -e REDIS_PORT=6379 \
+
+# Lancer en arrière-plan
+docker run -d `
+  --name cg_feature_updater `
+  --network cyberguardian_default `
+  -e ENV=local `
+  -e KAFKA_BOOTSTRAP_SERVERS=redpanda:9092 `
+  -e REDIS_HOST=redis `
+  -e REDIS_PORT=6379 `
   cyberguardian-feature-updater
 ```
 
-### 4. Lancer le simulateur
+Vérifier qu'il est démarré :
+
+```bash
+docker logs cg_feature_updater --tail 5
+```
+
+Résultat attendu :
+```
+Feature Updater v1.0
+ENV=local | topics=['transactions', 'sim-events', 'otp-events']
+Successfully joined group feature-updater-transactions
+```
+
+---
+
+### Étape 4 — Lancer le simulateur
+
+Génère 500 abonnés et publie ~23 000 événements dans les 3 topics Kafka.
+Le Feature Updater les consomme au fur et à mesure et met à jour Redis.
 
 ```bash
 docker compose --profile simulator run --rm simulator --mode batch --reset-profiles
 ```
 
-### 5. Vérifier les profils dans Redis
+Durée : ~1 minute. Résultat attendu :
+```
+Simulation 30 jours planifiée :
+  Scénarios :  22793  (fraudes=220, légitimes=22573)
+Publication terminée.
+```
+
+---
+
+### Étape 5 — Vérifier Redis et Kafka
 
 ```bash
-# Nombre de profils mis à jour
+# 500 profils doivent être dans Redis
 docker exec cg_redis redis-cli DBSIZE
 
-# Inspecter un profil (remplacer la clé par une vraie)
-docker exec cg_redis redis-cli GET "profile:CPT-<hash>"
+# Inspecter un profil réel
+docker exec cg_redis redis-cli RANDOMKEY
+# copier la clé retournée, ex: profile:CPT-abc123
+docker exec cg_redis redis-cli GET "profile:CPT-abc123"
+
+# Logs du Feature Updater (0 erreur attendu)
+docker logs cg_feature_updater --tail 10
+
+# Vérifier les events dans Kafka
+docker exec cg_redpanda rpk topic consume transactions `
+  --brokers localhost:9092 --num 3 --offset start --format "%v\n"
 ```
 
-### 6. Vérifier les données dans Kafka
+---
+
+### Étape 6 — Entraîner la Couche 1 (IA-4 — Règles)
+
+La Couche 1 ne nécessite pas d'entraînement — les règles sont dans `engine/rules/rules.yaml`.
+Vérifier qu'elles sont bien dans MinIO :
 
 ```bash
-docker exec cg_redpanda rpk topic consume transactions \
-  --brokers localhost:9092 --num 5 --offset start --format "%v\n"
+docker run --rm --network cyberguardian_default `è
+  --entrypoint sh minio/mc:latest -c `
+  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null `
+   && mc cat local/cg-models/rules/rules.yaml | head -5"
 ```
 
-### 7. Lancer l'EDA
+Résultat attendu :
+```
+# CyberGuardian AI — Moteur de règles (Couche 1) — IA-4
+# Version: 1.0 (baseline complète — 10/10 règles finalisées)
+```
+
+Tester la Couche 1 directement :
 
 ```bash
-pip install -r requirements.txt
-jupyter notebook notebooks/01_EDA_simulateur.ipynb
+python -c "
+import sys; sys.path.insert(0, '.')
+from engine.rules.engine import RuleEngine
+e = RuleEngine()
+print(f'Couche 1 OK — {e.rules_count} regles chargees depuis {e.loaded_from}')
+"
+```
+
+---
+
+### Étape 7 — Entraîner la Couche 2 (IA-5 — Isolation Forest)
+
+Lit les profils Redis, construit le dataset, entraîne l'Isolation Forest, sauvegarde dans MinIO.
+
+```bash
+python -c "
+import sys, os
+sys.path.insert(0, '.')
+os.environ['REDIS_HOST']       = 'localhost'
+os.environ['REDIS_PORT']       = '16379'
+os.environ['MINIO_ENDPOINT']   = 'localhost:19000'
+os.environ['MINIO_ACCESS_KEY'] = 'minioadmin'
+os.environ['MINIO_SECRET_KEY'] = 'minioadmin123'
+
+# Regenerer les evenements avec les memes seeds que le simulateur
+import random
+from datetime import datetime, timedelta, timezone
+from simulator.subscribers import generate_subscribers
+from simulator.scenarios import (
+    build_transaction_normale, build_sim_swap_simple,
+    build_sim_swap_cascade, build_pic_otp,
+    build_gros_montant_legitime, build_voyage_legitime,
+)
+from simulator.calendrier import planifier_simulation
+from simulator.config import SEED, NB_ABONNES
+
+comptes = generate_subscribers(NB_ABONNES, seed=SEED)
+_, evenements = planifier_simulation(comptes, seed=SEED)
+events = [e.payload for e in evenements if e.stream == 'transactions']
+print(f'Events : {len(events)} transactions | fraudes={sum(1 for e in events if e.get(\"label_fraude\")==1)}')
+
+from engine.anomaly.dataset import build_dataset
+from engine.anomaly.train   import train
+
+ds  = build_dataset(events=events)
+res = train(ds, promote=True)
+print(f'Couche 2 OK — AUC taux anomalie train={res.metrics[\"train_anomaly_rate\"]:.3f}')
+print(f'Modele sauvegarde : {res.model_key}')
+"
+```
+
+---
+
+### Étape 8 — Entraîner la Couche 3 (IA-6 — XGBoost)
+
+Lit les profils Redis, entraîne XGBoost avec `scale_pos_weight`, sauvegarde dans MinIO.
+
+```bash
+python -c "
+import sys, os
+sys.path.insert(0, '.')
+os.environ['REDIS_HOST']       = 'localhost'
+os.environ['REDIS_PORT']       = '16379'
+os.environ['MINIO_ENDPOINT']   = 'localhost:19000'
+os.environ['MINIO_ACCESS_KEY'] = 'minioadmin'
+os.environ['MINIO_SECRET_KEY'] = 'minioadmin123'
+
+from simulator.subscribers import generate_subscribers
+from simulator.calendrier  import planifier_simulation
+from simulator.config      import SEED, NB_ABONNES
+
+comptes = generate_subscribers(NB_ABONNES, seed=SEED)
+_, evenements = planifier_simulation(comptes, seed=SEED)
+events = [e.payload for e in evenements if e.stream == 'transactions']
+print(f'Events : {len(events)} transactions | fraudes={sum(1 for e in events if e.get(\"label_fraude\")==1)}')
+
+from engine.supervised.dataset import build_dataset
+from engine.supervised.train   import train
+
+ds  = build_dataset(events=events)
+print(f'Dataset : train={ds.n_train} | test={ds.n_test} | scale_pos_weight={ds.scale_pos_weight:.1f}')
+res = train(ds, promote=True)
+print(f'Couche 3 OK — AUC-PR test={res.metrics[\"auc_pr_test\"]:.4f}')
+print(f'CV mean={res.metrics[\"cv_auc_pr_mean\"]:.4f} | champion={res.is_champion}')
+print(f'Modele sauvegarde : {res.model_key}')
+"
+```
+
+---
+
+### Étape 9 — Vérifier les modèles dans MinIO
+
+```bash
+docker run --rm --network cyberguardian_default \
+  --entrypoint sh minio/mc:latest -c \
+  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null \
+   && mc ls local/cg-models/ --recursive"
+```
+
+Résultat attendu :
+```
+rules/rules.yaml
+anomaly/isolation_forest_<timestamp>.pkl
+anomaly/isolation_forest_<timestamp>_metrics.json
+anomaly/production/current.json
+xgboost/xgboost_<timestamp>.pkl
+xgboost/xgboost_<timestamp>_metrics.json
+xgboost/production/current.json
+xgboost/production/history.json
+```
+
+---
+
+### Étape 10 — Tester le scoring avec les 3 couches
+
+Charge les modèles depuis MinIO + les profils depuis Redis, score un événement réel.
+
+```bash
+python -c "
+import sys, os, json
+sys.path.insert(0, '.')
+os.environ['REDIS_HOST']       = 'localhost'
+os.environ['REDIS_PORT']       = '16379'
+os.environ['MINIO_ENDPOINT']   = 'localhost:19000'
+os.environ['MINIO_ACCESS_KEY'] = 'minioadmin'
+os.environ['MINIO_SECRET_KEY'] = 'minioadmin123'
+
+import redis as _redis
+from datetime import datetime, timezone, timedelta
+from engine.rules.engine        import RuleEngine
+from engine.anomaly.detector    import AnomalyDetector
+from engine.supervised.detector import XGBoostDetector
+
+# Charger les 3 couches
+c1 = RuleEngine()
+c2 = AnomalyDetector()
+c3 = XGBoostDetector()
+print(f'Couche 1 — {c1.rules_count} regles | Couche 2 — {c2.is_ready} v{c2.version} | Couche 3 — {c3.is_ready} v{c3.version}')
+
+# Lire un vrai profil depuis Redis
+r     = _redis.Redis(host='localhost', port=16379, decode_responses=True)
+key   = r.keys('profile:*')[0]
+profil = json.loads(r.get(key))
+print(f'Profil reel : {profil[\"id_compte\"]} | segment={profil.get(\"segment\")} | nb_tx={profil.get(\"nb_transactions\")}')
+
+# Simuler un SIM_SWAP sur ce compte
+ts_swap = datetime.now(timezone.utc) - timedelta(minutes=15)
+event = {
+    'id_compte':       profil['id_compte'],
+    'horodatage':      datetime.now(timezone.utc).isoformat(),
+    'montant':         profil.get('montant_moyen_habituel', 10000) * 5,
+    'device_id':       'DEV-ATTAQUANT',
+    'id_beneficiaire': 'BEN-INCONNU',
+    'antenne':         'MAT-ANT-999',
+}
+profil_fraude = dict(profil)
+profil_fraude['ts_dernier_swap'] = ts_swap.isoformat()
+profil_fraude['nb_otp_1h']       = 6
+
+# Scoring 3 couches
+r1 = c1.evaluate(event, profil_fraude)
+r2 = c2.predict(event,  profil_fraude)
+r3 = c3.predict(event,  profil_fraude)
+score_final = max(r1.score, r2.score, r3.score)
+decision    = 'BLOCK' if score_final >= 70 else ('CHALLENGE' if score_final >= 30 else 'PASS')
+
+print()
+print('=== Résultat du scoring ===')
+print(f'  Couche 1 (regles) : {r1.score}/100  regles={[m.rule_id for m in r1.matches]}')
+print(f'  Couche 2 (IF)     : {r2.score}/100  zscore={r2.zscore_montant:.1f}')
+print(f'  Couche 3 (XGBoost): {r3.score}/100  proba={r3.probability:.4f}')
+print(f'  SCORE FINAL (max) : {score_final}/100  -> {decision}')
+print(f'  SHAP top-3 : {[(s[\"feature\"],s[\"direction\"]) for s in r3.shap_top3]}')
+"
+```
+
+---
+
+### Récapitulatif des commandes
+
+```bash
+# 1. Infrastructure
+docker compose up redpanda redis postgres minio redpanda-init minio-init -d
+
+# 2. Feature Updater (IA-3)
+docker compose build feature-updater
+docker run -d --name cg_feature_updater --network cyberguardian_default \
+  -e ENV=local -e KAFKA_BOOTSTRAP_SERVERS=redpanda:9092 \
+  -e REDIS_HOST=redis -e REDIS_PORT=6379 \
+  cyberguardian-feature-updater
+
+# 3. Simulateur
+docker compose --profile simulator run --rm simulator --mode batch --reset-profiles
+
+# 4. Vérifier Redis
+docker exec cg_redis redis-cli DBSIZE   # → 500
+
+# 5. Couche 1 — vérification (pas d'entraînement)
+python -c "import sys; sys.path.insert(0,'.'); from engine.rules.engine import RuleEngine; e=RuleEngine(); print(e.rules_count,'regles')"
+
+# 6. Couche 2 — entraînement IA-5
+# (voir Étape 7 ci-dessus)
+
+# 7. Couche 3 — entraînement IA-6
+# (voir Étape 8 ci-dessus)
+
+# 8. Vérifier MinIO
+docker run --rm --network cyberguardian_default --entrypoint sh minio/mc:latest \
+  -c "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 >/dev/null && mc ls local/cg-models/ --recursive"
+
+# 9. Test scoring complet
+# (voir Étape 10 ci-dessus)
+
+# 10. Arrêt
+docker stop cg_feature_updater && docker rm cg_feature_updater
+docker compose down
 ```
 
 ---
