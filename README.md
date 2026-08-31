@@ -86,34 +86,41 @@ CyberGradianAI/
 │   │   │   ├── handlers.py           # Dispatch topic → store (FeatureHandler)
 │   │   │   ├── main.py               # Boucle de consommation Kafka persistante
 │   │   │   └── Dockerfile            # Image légère (requirements-updater.txt)
-│   │   ├── rules/                    # IA-4 — Moteur de règles expertes ✅
+│   │   │
+│   │   ├── rules/                    # IA-4 — Couche 1 : Moteur de règles expertes ✅
 │   │   │   ├── rules.yaml            # 10 règles YAML documentées (R01–R10)
 │   │   │   ├── features.py           # Calcul des features dérivées à la volée
-│   │   │   ├── engine.py             # Évaluation + rechargement à chaud S3/fichier
-│   │   │   └── __init__.py
-│   │   ├── anomaly/                  # IA-5 — Isolation Forest (à faire)
-│   │   ├── supervised/               # IA-6 — XGBoost + SHAP (à faire)
-│   │   └── scoring_api/              # IA-7 — API FastAPI + /reload-rules (à faire)
+│   │   │   └── engine.py             # Évaluation + rechargement à chaud S3/fichier
+│   │   │
+│   │   ├── anomaly/                  # IA-5 — Couche 2 : Isolation Forest + Z-score ✅
+│   │   │   ├── dataset.py            # Construction dataset d'entraînement
+│   │   │   ├── train.py              # Entraînement et versionnage MinIO/S3
+│   │   │   ├── evaluate.py           # Harnais d'évaluation (AUC-PR, Recall@1%)
+│   │   │   └── detector.py           # Predictor hybride IF + Z-scores
+│   │   │
+│   │   ├── supervised/               # IA-6 — Couche 3 : XGBoost + SHAP ✅
+│   │   │   ├── dataset.py            # Dataset supervisé + scale_pos_weight
+│   │   │   ├── train.py              # XGBoost CV 5-folds + promotion champion
+│   │   │   ├── evaluate.py           # Explicabilité globale SHAP + métriques
+│   │   │   └── detector.py           # Scoring supervisé + Top-3 SHAP
+│   │   │
+│   │   └── scoring_api/              # IA-7 — API FastAPI de scoring temps réel (à faire)
 │   │
 │   ├── interfaces/
 │   │   ├── streams.py                # Abstraction Kafka ↔ Kinesis
 │   │   └── store.py                  # Abstraction Redis/MinIO ↔ DynamoDB/S3
 │   │
-│   ├── tests/                        # Suites de tests unitaires automatisés ✅
-│   │   ├── __init__.py
-│   │   ├── test_simulator.py
-│   │   ├── test_rules.py
-│   │   └── test_updater.py
+│   ├── tests/                        # 🧪 Suites de tests unitaires (60/60 OK) ✅
+│   │   ├── test_simulator.py         # Validation du simulateur (IA-1)
+│   │   ├── test_updater.py           # Validation du Feature Updater (IA-3)
+│   │   ├── test_rules.py             # Validation Couche 1 (IA-4)
+│   │   ├── test_anomaly.py           # Validation Couche 2 (IA-5)
+│   │   ├── test_ia6.py               # Validation Couche 3 (IA-6)
+│   │   └── test_pipeline.py          # Validation Pipeline d'intégration (IA-7)
 │   │
-│   ├── infra/                        # IA-9 — Infrastructure Terraform AWS (à faire)
-│   │
-│   ├── docs/
-│   │   └── dictionnaire_features.md  # IA-2 — 12 features documentées ✅
-│   │
-│   ├── notebooks/
-│   │   └── 01_EDA_simulateur.ipynb   # EDA Phase 1
-│   │
-│   ├── docker-compose.yml            # Stack locale complète
+│   ├── run_train_couche2.py          # Script d'entraînement Couche 2 (IA-5)
+│   ├── run_train_couche3.py          # Script d'entraînement Couche 3 (IA-6)
+│   ├── docker-compose.yml            # Stack locale complète (6 services)
 │   ├── requirements.txt              # Dépendances Python complètes (API + ML)
 │   ├── requirements-updater.txt      # Dépendances minimales du feature-updater
 │   ├── .env.example                  # Modèle des variables d'environnement
@@ -128,12 +135,12 @@ CyberGradianAI/
 
 | Tâche | Description | Statut |
 |---|---|---|
-| IA-1 | Simulateur (500 abonnés, 7 scénarios, 22 793 événements) | ✅ Fait |
+| IA-1 | Simulateur (500 abonnés, 7 scénarios, 23 934 événements) | ✅ Fait |
 | IA-2 | Dictionnaire de features (12 features documentées) | ✅ Fait |
 | IA-3 | Feature Updater (Welford, fenêtres glissantes, sets) | ✅ Fait + testé Docker |
 | IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + validé |
 | IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ✅ Fait + validé |
-| IA-6 | XGBoost via SageMaker + SHAP + champion/challenger | ⏳ À faire |
+| IA-6 | XGBoost supervisé + Explicabilité SHAP | ✅ Fait + validé |
 | IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | ⏳ À faire |
 | IA-8 | Harnais d'évaluation + CI GitHub Actions | ⏳ À faire |
 | IA-9 | Socle Terraform AWS (Kinesis, DynamoDB, S3, ECS…) | ⏳ À faire |
@@ -175,21 +182,11 @@ CyberGradianAI/
 
 ---
 
-<<<<<<< HEAD
-## Lancer le pipeline complet avec Docker
-=======
 ## Démarrage rapide — tester le pipeline complet
->>>>>>> c511adf10871166e2ba3ea9839d73c9a9eff9a4d
 
 Ce guide démarre toute la stack locale, lance le Feature Updater, fait tourner le simulateur, entraîne les 3 couches IA et vérifie que tout fonctionne.
 
-<<<<<<< HEAD
-> **Prérequis** : Docker Desktop avec WSL2 activé + Python 3.11+ installé localement.
-=======
-- Docker Desktop avec WSL2 activé (Windows)
-- Python 3.11+
-- Git
->>>>>>> c511adf10871166e2ba3ea9839d73c9a9eff9a4d
+> **Prérequis** : Docker Desktop avec WSL2 activé (Windows), Python 3.11+, Git.
 
 ---
 

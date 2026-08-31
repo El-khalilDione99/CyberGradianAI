@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+.pytest_cache/
+*.pytest_cache
 .Python
 *.egg
 *.egg-info/

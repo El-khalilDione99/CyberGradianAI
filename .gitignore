@@ -1,0 +1,18 @@
+# Pytest
+.pytest_cache/
+*.pytest_cache
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
