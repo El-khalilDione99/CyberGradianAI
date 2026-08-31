@@ -37,16 +37,18 @@ Transaction entrante
                    │
                    ▼
 ┌───────────────────────────────────────────┐
-│  Couche 2 — Détection d'anomalies (IA-5) │
-│  Isolation Forest + z-scores Welford      │
-│  Comportement inhabituel de l'abonné      │
+│  Couche 2 — Détection d'anomalies (IA-5) ✅│
+│  Isolation Forest + z-score Welford       │
+│  Formule hybride : IF principal,          │
+│  z-score override aux seuils 3σ et 5σ    │
 └──────────────────┬────────────────────────┘
                    │
                    ▼
 ┌───────────────────────────────────────────┐
-│  Couche 3 — Modèle supervisé (IA-6)      │
-│  XGBoost entraîné sur données labellisées │
-│  Explicabilité SHAP                       │
+│  Couche 3 — Modèle supervisé (IA-6)  ✅  │
+│  XGBoost (local) ou SageMaker Training    │
+│  scale_pos_weight, CV stratifiée 5 folds  │
+│  SHAP top-3 par transaction               │
 └──────────────────┬────────────────────────┘
                    │
                    ▼
@@ -95,8 +97,18 @@ CyberGradianAI/
 │   │   │   ├── features.py           # Calcul des features dérivées à la volée
 │   │   │   ├── engine.py             # Évaluation + rechargement à chaud S3/fichier
 │   │   │   └── __init__.py
-│   │   ├── anomaly/                  # IA-5 — Isolation Forest (à faire)
-│   │   ├── supervised/               # IA-6 — XGBoost + SHAP (à faire)
+│   │   ├── anomaly/                  # IA-5 — Isolation Forest ✅
+│   │   │   ├── dataset.py            # Double filtre NORMAL+label=0, split stratifié
+│   │   │   ├── train.py              # IsolationForest + RobustScaler, champion/challenger
+│   │   │   ├── detector.py           # AnomalyDetector, formule hybride IF + z-score
+│   │   │   ├── evaluate.py           # AUC-PR, rappel@1%FPR, rapport S3
+│   │   │   └── __init__.py
+│   │   ├── supervised/               # IA-6 — XGBoost supervisé ✅
+│   │   │   ├── dataset.py            # Toutes classes, scale_pos_weight, export Parquet
+│   │   │   ├── train.py              # XGBoost local + SageMaker stub, champion/challenger
+│   │   │   ├── detector.py           # XGBoostDetector, SHAP top-3, rechargement à chaud
+│   │   │   ├── evaluate.py           # AUC-PR, SHAP globale, rapport S3
+│   │   │   └── __init__.py
 │   │   └── scoring_api/              # IA-7 — API FastAPI + /reload-rules (à faire)
 │   │
 │   ├── interfaces/
@@ -129,8 +141,8 @@ CyberGradianAI/
 | IA-2 | Dictionnaire de features (12 features documentées) | ✅ Fait |
 | IA-3 | Feature Updater (Welford, fenêtres glissantes, sets) | ✅ Fait + testé Docker |
 | IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + 46/46 tests |
-| IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ⏳ À faire |
-| IA-6 | XGBoost via SageMaker + SHAP + champion/challenger | ⏳ À faire |
+| IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ✅ Fait + 34/34 tests |
+| IA-6 | XGBoost (local + SageMaker stub) + SHAP + champion/challenger | ✅ Fait + 47/47 tests |
 | IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | ⏳ À faire |
 | IA-8 | Harnais d'évaluation + CI GitHub Actions | ⏳ À faire |
 | IA-9 | Socle Terraform AWS (Kinesis, DynamoDB, S3, ECS…) | ⏳ À faire |
@@ -398,7 +410,68 @@ En AWS : si le fichier local est absent, le moteur télécharge `cg-models/rules
 
 ---
 
-## Services locaux
+## Détection d'anomalies — fonctionnement (IA-5)
+
+La Couche 2 détecte les comportements inhabituels sans labels — elle apprend le trafic normal et signale tout ce qui s'en écarte.
+
+**Isolation Forest** entraîné uniquement sur les transactions `type_scenario=NORMAL` (double filtre). Score normalisé 0-100 : 0 = comportement typique, 100 = forte anomalie.
+
+**Formule hybride** (décidée en amont, pas improvisée au code) :
+```
+score_couche2 = score_IF
+  si zscore_montant > 3.0  →  score = max(score_IF, 75)   # override soft
+  si zscore_montant > 5.0  →  score = max(score_IF, 90)   # override hard
+  (ignoré si nb_transactions < 10 — std Welford instable)
+```
+
+**15 features** (hours_since_sim_swap exclu — `inf` pollue RobustScaler).
+**Split stratifié par abonné** : garantit qu'un abonné ne soit pas à la fois dans train ET test.
+**Versionnage** : `cg-models/anomaly/production/current.json` pointe vers le champion.
+
+---
+
+## XGBoost supervisé — fonctionnement (IA-6)
+
+La Couche 3 apprend directement les patterns de fraude à partir des labels.
+
+**17 features** (15 de IA-5 + `hours_since_sim_swap` géré par XGBoost + `solde`).
+`hours_since_sim_swap = inf` → remplacé par `9999.0` (les arbres tolèrent les valeurs extrêmes).
+
+**scale_pos_weight = n_légitimes / n_fraudes** : compense le déséquilibre sans SMOTE.
+Avec ~2% de fraudes → `scale_pos_weight ≈ 50`, chaque fraude pèse 50× plus dans la perte.
+
+**Validation croisée stratifiée 5 folds** : chaque fold contient la même proportion de fraudes.
+Métrique d'optimisation : **AUC-PR** (pas accuracy, pas AUC-ROC).
+
+**Deux modes d'entraînement** :
+- Local (`ENV=local`) : XGBoost Python direct, quelques secondes
+- SageMaker (`ENV=aws + USE_SAGEMAKER=true`) : Training Job ml.m5.large, ~5 min, sans endpoint d'inférence permanent
+
+**SHAP top-3** : chaque prédiction retourne les 3 features qui ont le plus contribué, avec direction (`fraud` ou `legitimate`). Exemple :
+```json
+[
+  {"feature": "new_device",   "value": 1.0,  "shap": 0.42, "direction": "fraud"},
+  {"feature": "amount_ratio", "value": 9.25, "shap": 0.38, "direction": "fraud"},
+  {"feature": "is_roaming",   "value": 1.0,  "shap": 0.21, "direction": "fraud"}
+]
+```
+
+**Champion/challenger** basé sur AUC-PR :
+- Pas de champion → promotion automatique
+- Challenger AUC-PR > champion + 0.005 → promotion
+- Historique des 20 derniers entraînements dans `xgboost/production/history.json`
+
+**Versionnage S3** :
+```
+cg-models/xgboost/
+  xgboost_<YYYYMMDD_HHmmss>.pkl
+  xgboost_<YYYYMMDD_HHmmss>_metrics.json
+  production/
+    current.json    ← champion actif
+    history.json    ← 20 derniers entraînements
+```
+
+---
 
 | Service | Port hôte | Interface |
 |---|---|---|
@@ -428,6 +501,15 @@ En AWS : si le fichier local est absent, le moteur télécharge `cg-models/rules
 | `SCORE_THRESHOLD_HIGH` | `90` | Seuil BLOCK prioritaire |
 | `FU_BATCH_SIZE` | `100` | Taille des lots Kafka pour le feature updater |
 | `SEED` | `42` | Seed globale — démo rejouable à l'identique |
+| `IF_N_ESTIMATORS` | `200` | Nombre d'arbres Isolation Forest |
+| `IF_CONTAMINATION` | `0.02` | Proportion de fraudes estimée (2%) |
+| `Z_OVERRIDE_SOFT` | `3.0` | z-score → plancher score couche 2 à 75 |
+| `Z_OVERRIDE_HARD` | `5.0` | z-score → plancher score couche 2 à 90 |
+| `XGB_N_ESTIMATORS` | `300` | Nombre d'arbres XGBoost |
+| `XGB_MAX_DEPTH` | `6` | Profondeur maximale des arbres |
+| `XGB_MIN_IMPROVEMENT` | `0.005` | Seuil AUC-PR pour promouvoir un challenger |
+| `USE_SAGEMAKER` | `false` | `true` pour entraîner via SageMaker Training Job |
+| `SAGEMAKER_ROLE_ARN` | — | ARN du rôle IAM SageMaker (AWS uniquement) |
 
 > Aucune clé AWS statique dans le code. En production : rôles IAM attachés aux tâches ECS et OIDC pour la CI.
 
