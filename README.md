@@ -1,4 +1,4 @@
-﻿# CyberGuardian AI
+# CyberGuardian AI
 
 > Moteur IA de détection de fraude **SIM swap** en temps réel pour le **Mobile Money au Sénégal**
 
@@ -204,20 +204,16 @@ cd CyberGradianAI/cyberguardian
 
 ### Étape 2 — Démarrer l'infrastructure
 
-Lance Redpanda (Kafka), Redis, PostgreSQL et MinIO.
-Les services `*-init` créent automatiquement les topics Kafka, les buckets MinIO et uploadent `rules.yaml`.
-
-Lance Redpanda, Redis, PostgreSQL et MinIO. Les services `redpanda-init` et `minio-init` créent automatiquement les topics Kafka, les buckets MinIO **et uploadent `rules.yaml` dans MinIO** au démarrage.
+Lance Redpanda (Kafka), Redis, PostgreSQL et MinIO. Les services `redpanda-init` et `minio-init` créent automatiquement les topics Kafka, les buckets MinIO **et uploadent `rules.yaml` dans MinIO** au démarrage.
 
 ```bash
 docker compose up redpanda redis postgres minio redpanda-init minio-init -d
 ```
 
-Attendre ~30 secondes puis vérifier :
+Vérifier que les services sont prêts :
 
 ```bash
 docker compose ps
-<<<<<<< HEAD
 ```
 
 Résultat attendu :
@@ -236,38 +232,18 @@ cg_redpanda_init   Exited (0)   ← normal
 ### Étape 3 — Construire et lancer le Feature Updater (IA-3)
 
 Le Feature Updater écoute Kafka et met à jour les profils abonnés dans Redis en temps réel.
-=======
-# NAME              STATUS
-# cg_redpanda       Up X minutes (healthy)
-# cg_redis          Up X minutes (healthy)
-# cg_postgres       Up X minutes (healthy)
-# cg_minio          Up X minutes (healthy)
-```
-
-### 3. Construire et lancer le Feature Updater
->>>>>>> c511adf10871166e2ba3ea9839d73c9a9eff9a4d
 
 ```bash
 # Construire l'image (première fois ~2-3 min)
 docker compose build feature-updater
 
-<<<<<<< HEAD
 # Lancer en arrière-plan
-docker run -d `
-  --name cg_feature_updater `
-  --network cyberguardian_default `
-  -e ENV=local `
-  -e KAFKA_BOOTSTRAP_SERVERS=redpanda:9092 `
-  -e REDIS_HOST=redis `
-  -e REDIS_PORT=6379 `
-=======
 docker run -d --name cg_feature_updater \
   --network cyberguardian_default \
   -e ENV=local \
   -e KAFKA_BOOTSTRAP_SERVERS=redpanda:9092 \
   -e REDIS_HOST=redis \
   -e REDIS_PORT=6379 \
->>>>>>> c511adf10871166e2ba3ea9839d73c9a9eff9a4d
   cyberguardian-feature-updater
 ```
 
@@ -275,13 +251,6 @@ Vérifier qu'il est démarré :
 
 ```bash
 docker logs cg_feature_updater --tail 5
-```
-
-Résultat attendu :
-```
-Feature Updater v1.0
-ENV=local | topics=['transactions', 'sim-events', 'otp-events']
-Successfully joined group feature-updater-transactions
 ```
 
 ---
@@ -295,11 +264,11 @@ Le Feature Updater les consomme au fur et à mesure et met à jour Redis.
 docker compose --profile simulator run --rm simulator --mode batch --reset-profiles
 ```
 
-<<<<<<< HEAD
-Durée : ~1 minute. Résultat attendu :
+Durée : ~20 secondes. Résultat attendu :
 ```
 Simulation 30 jours planifiée :
   Scénarios :  22793  (fraudes=220, légitimes=22573)
+  Événements:  23934
 Publication terminée.
 ```
 
@@ -312,16 +281,10 @@ Publication terminée.
 docker exec cg_redis redis-cli DBSIZE
 
 # Inspecter un profil réel
-docker exec cg_redis redis-cli RANDOMKEY
-# copier la clé retournée, ex: profile:CPT-abc123
-docker exec cg_redis redis-cli GET "profile:CPT-abc123"
+docker exec cg_redis redis-cli GET "profile:CPT-7e16cdf07c7a"
 
-# Logs du Feature Updater (0 erreur attendu)
+# Logs du Feature Updater (doit afficher ~300 à 530+ msg/s, 0 erreur)
 docker logs cg_feature_updater --tail 10
-
-# Vérifier les events dans Kafka
-docker exec cg_redpanda rpk topic consume transactions `
-  --brokers localhost:9092 --num 3 --offset start --format "%v\n"
 ```
 
 ---
@@ -332,9 +295,9 @@ La Couche 1 ne nécessite pas d'entraînement — les règles sont dans `engine/
 Vérifier qu'elles sont bien dans MinIO :
 
 ```bash
-docker run --rm --network cyberguardian_default `è
-  --entrypoint sh minio/mc:latest -c `
-  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null `
+docker run --rm --network cyberguardian_default \
+  --entrypoint sh minio/mc:latest -c \
+  "mc alias set local http://minio:9000 minioadmin minioadmin123 --api S3v4 > /dev/null \
    && mc cat local/cg-models/rules/rules.yaml | head -5"
 ```
 
@@ -359,80 +322,20 @@ print(f'Couche 1 OK — {e.rules_count} regles chargees depuis {e.loaded_from}')
 
 ### Étape 7 — Entraîner la Couche 2 (IA-5 — Isolation Forest)
 
-Lit les profils Redis, construit le dataset, entraîne l'Isolation Forest, sauvegarde dans MinIO.
+Lit les profils Redis, construit le dataset, entraîne l'Isolation Forest et sauvegarde le modèle dans MinIO.
 
 ```bash
-python -c "
-import sys, os
-sys.path.insert(0, '.')
-os.environ['REDIS_HOST']       = 'localhost'
-os.environ['REDIS_PORT']       = '16379'
-os.environ['MINIO_ENDPOINT']   = 'localhost:19000'
-os.environ['MINIO_ACCESS_KEY'] = 'minioadmin'
-os.environ['MINIO_SECRET_KEY'] = 'minioadmin123'
-
-# Regenerer les evenements avec les memes seeds que le simulateur
-import random
-from datetime import datetime, timedelta, timezone
-from simulator.subscribers import generate_subscribers
-from simulator.scenarios import (
-    build_transaction_normale, build_sim_swap_simple,
-    build_sim_swap_cascade, build_pic_otp,
-    build_gros_montant_legitime, build_voyage_legitime,
-)
-from simulator.calendrier import planifier_simulation
-from simulator.config import SEED, NB_ABONNES
-
-comptes = generate_subscribers(NB_ABONNES, seed=SEED)
-_, evenements = planifier_simulation(comptes, seed=SEED)
-events = [e.payload for e in evenements if e.stream == 'transactions']
-print(f'Events : {len(events)} transactions | fraudes={sum(1 for e in events if e.get(\"label_fraude\")==1)}')
-
-from engine.anomaly.dataset import build_dataset
-from engine.anomaly.train   import train
-
-ds  = build_dataset(events=events)
-res = train(ds, promote=True)
-print(f'Couche 2 OK — AUC taux anomalie train={res.metrics[\"train_anomaly_rate\"]:.3f}')
-print(f'Modele sauvegarde : {res.model_key}')
-"
+python run_train_couche2.py
 ```
 
 ---
 
 ### Étape 8 — Entraîner la Couche 3 (IA-6 — XGBoost)
 
-Lit les profils Redis, entraîne XGBoost avec `scale_pos_weight`, sauvegarde dans MinIO.
+Lit les profils Redis, entraîne XGBoost avec `scale_pos_weight`, génère les métriques SHAP et sauvegarde dans MinIO.
 
 ```bash
-python -c "
-import sys, os
-sys.path.insert(0, '.')
-os.environ['REDIS_HOST']       = 'localhost'
-os.environ['REDIS_PORT']       = '16379'
-os.environ['MINIO_ENDPOINT']   = 'localhost:19000'
-os.environ['MINIO_ACCESS_KEY'] = 'minioadmin'
-os.environ['MINIO_SECRET_KEY'] = 'minioadmin123'
-
-from simulator.subscribers import generate_subscribers
-from simulator.calendrier  import planifier_simulation
-from simulator.config      import SEED, NB_ABONNES
-
-comptes = generate_subscribers(NB_ABONNES, seed=SEED)
-_, evenements = planifier_simulation(comptes, seed=SEED)
-events = [e.payload for e in evenements if e.stream == 'transactions']
-print(f'Events : {len(events)} transactions | fraudes={sum(1 for e in events if e.get(\"label_fraude\")==1)}')
-
-from engine.supervised.dataset import build_dataset
-from engine.supervised.train   import train
-
-ds  = build_dataset(events=events)
-print(f'Dataset : train={ds.n_train} | test={ds.n_test} | scale_pos_weight={ds.scale_pos_weight:.1f}')
-res = train(ds, promote=True)
-print(f'Couche 3 OK — AUC-PR test={res.metrics[\"auc_pr_test\"]:.4f}')
-print(f'CV mean={res.metrics[\"cv_auc_pr_mean\"]:.4f} | champion={res.is_champion}')
-print(f'Modele sauvegarde : {res.model_key}')
-"
+python run_train_couche3.py
 ```
 
 ---
