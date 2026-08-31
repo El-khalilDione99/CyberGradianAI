@@ -11,6 +11,18 @@ __pycache__/
 venv/
 env/
 
+# Secrets
+.env
+.env.*
+.env.local
+!.env.example
+secrets.json
+credentials.json
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
 # IDE & OS
 .vscode/
 .idea/

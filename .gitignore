@@ -1,15 +1,17 @@
-# Pytest
+# Root .gitignore
 .pytest_cache/
 *.pytest_cache
 
-# Python cache
-__pycache__/
-*.py[cod]
+# Secrets & Local Envs
+.env.local
+.env.*
+!.env.example
 
-# Virtual environment
+# Virtual Envs
 .venv/
-venv/
-env/
+
+# Notebooks
+.ipynb_checkpoints/
 
 # IDE & OS
 .vscode/
