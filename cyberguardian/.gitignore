@@ -27,6 +27,7 @@ ENV/
 # Secrets — ne jamais committer
 *.env
 .env.*
+!.env.example
 secrets.json
 credentials.json
 *.pem

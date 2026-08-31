@@ -1,12 +1,19 @@
 """
-test_simulator.py
-─────────────────
+tests/test_simulator.py
+───────────────────────
 Validation complète du simulateur v3 (modèle Compte, 30 jours).
 """
 
 import sys
-sys.path.insert(0, ".")
+from pathlib import Path
 
+# Assure que le dossier cyberguardian est dans sys.path quel que soit l'endroit où le test est lancé
+CYBERGUARDIAN_DIR = Path(__file__).resolve().parent.parent
+if str(CYBERGUARDIAN_DIR) not in sys.path:
+    sys.path.insert(0, str(CYBERGUARDIAN_DIR))
+
+import copy
+import random
 from datetime import datetime, timezone
 
 print("=" * 60)
@@ -124,7 +131,6 @@ print(f"     montant_moyen amorcé : {profil['montant_moyen']:,.0f} XOF")
 # ════════════════════════════════════════════════════════════
 # 4. SCÉNARIOS — structure et champs
 # ════════════════════════════════════════════════════════════
-import copy
 from simulator.scenarios import (
     build_sim_swap_simple, build_sim_swap_cascade, build_pic_otp,
     build_swap_legitime, build_nouveau_device_legitime,
@@ -175,7 +181,7 @@ def check_transaction(ev: dict, est_fraude: bool):
     assert ev["label_fraude"] == (1 if est_fraude else 0)
 
 # Test SIM_SWAP_SIMPLE
-s = build_sim_swap_simple(copy.deepcopy(c_test), __import__("random").Random(42), ts)
+s = build_sim_swap_simple(copy.deepcopy(c_test), random.Random(42), ts)
 assert s.type_scenario == TypeScenario.SIM_SWAP_SIMPLE
 assert s.est_fraude
 assert len(s.evenements) == 3  # otp + sim + tx
@@ -193,7 +199,7 @@ for ev in s.evenements:
 print(f"\n[OK] SIM_SWAP_SIMPLE : {len(s.evenements)} événements, id={s.id_scenario}")
 
 # Test SIM_SWAP_CASCADE
-s = build_sim_swap_cascade(copy.deepcopy(c_test), __import__("random").Random(42), ts)
+s = build_sim_swap_cascade(copy.deepcopy(c_test), random.Random(42), ts)
 assert s.type_scenario == TypeScenario.SIM_SWAP_CASCADE
 assert s.est_fraude
 assert len(s.evenements) >= 3  # otp + sim + au moins 1 tx
@@ -202,7 +208,7 @@ assert nb_tx >= 1
 print(f"[OK] SIM_SWAP_CASCADE : {len(s.evenements)} événements, {nb_tx} transferts")
 
 # Test PIC_OTP
-s = build_pic_otp(copy.deepcopy(c_test), __import__("random").Random(42), ts)
+s = build_pic_otp(copy.deepcopy(c_test), random.Random(42), ts)
 assert s.type_scenario == TypeScenario.PIC_OTP
 assert s.est_fraude
 nb_otp = sum(1 for ev in s.evenements if ev.stream == "otp-events")
@@ -210,7 +216,7 @@ assert 5 <= nb_otp <= 10
 print(f"[OK] PIC_OTP : {len(s.evenements)} événements, {nb_otp} OTP")
 
 # Test SWAP_LEGITIME
-s = build_swap_legitime(copy.deepcopy(c_test), __import__("random").Random(42), ts)
+s = build_swap_legitime(copy.deepcopy(c_test), random.Random(42), ts)
 assert s.type_scenario == TypeScenario.SWAP_LEGITIME
 assert not s.est_fraude
 for ev in s.evenements:
@@ -220,7 +226,7 @@ for ev in s.evenements:
 print(f"[OK] SWAP_LEGITIME : délai OTP >= 5 min (légitime)")
 
 # Test TRANSACTION_NORMALE
-s = build_transaction_normale(copy.deepcopy(c_test), __import__("random").Random(42), ts)
+s = build_transaction_normale(copy.deepcopy(c_test), random.Random(42), ts)
 assert not s.est_fraude
 assert len(s.evenements) == 1
 tx = s.evenements[0].payload
@@ -267,12 +273,12 @@ for s in scenarios:
 
 print(f"\n[OK] VOLUME 30 JOURS :")
 print(f"     Scénarios total  : {len(scenarios):>7}")
-print(f"     ├─ Fraudes       : {nb_fraudes:>7}  ({nb_fraudes/len(scenarios)*100:.1f}%)")
-print(f"     └─ Légitimes     : {nb_legit:>7}")
+print(f"     - Fraudes        : {nb_fraudes:>7}  ({nb_fraudes/len(scenarios)*100:.1f}%)")
+print(f"     - Légitimes      : {nb_legit:>7}")
 print(f"     Événements total : {total_ev:>7}")
-print(f"     ├─ transactions  : {nb_tx:>7}")
-print(f"     ├─ sim-events    : {nb_sim:>7}")
-print(f"     └─ otp-events    : {nb_otp:>7}")
+print(f"     - transactions   : {nb_tx:>7}")
+print(f"     - sim-events     : {nb_sim:>7}")
+print(f"     - otp-events     : {nb_otp:>7}")
 print(f"[OK] Ordre chronologique garanti")
 print(f"[OK] Labels cohérents (0/1)")
 
