@@ -1,72 +1,72 @@
-# CyberGuardian AI
+﻿# CyberGuardian AI
 
-> Moteur IA de détection de fraude **SIM swap** en temps réel pour le **Mobile Money au Sénégal**
+> Moteur IA de dÃ©tection de fraude **SIM swap** en temps rÃ©el pour le **Mobile Money au SÃ©nÃ©gal**
 
 ---
 
-## Le problème
+## Le problÃ¨me
 
-Chaque jour au Sénégal, des fraudeurs convainquent un agent télécom de transférer le numéro d'une victime sur une nouvelle carte SIM. Pendant les minutes qui suivent, ils interceptent tous les SMS — y compris les codes de sécurité — réinitialisent le PIN et vident le compte mobile money de la victime.
+Chaque jour au SÃ©nÃ©gal, des fraudeurs convainquent un agent tÃ©lÃ©com de transfÃ©rer le numÃ©ro d'une victime sur une nouvelle carte SIM. Pendant les minutes qui suivent, ils interceptent tous les SMS â€” y compris les codes de sÃ©curitÃ© â€” rÃ©initialisent le PIN et vident le compte mobile money de la victime.
 
-**3 794 infractions de cybercriminalité** ont été recensées en 2025 au Sénégal, avec des pertes se comptant en milliards de FCFA à l'échelle du continent.
+**3 794 infractions de cybercriminalitÃ©** ont Ã©tÃ© recensÃ©es en 2025 au SÃ©nÃ©gal, avec des pertes se comptant en milliards de FCFA Ã  l'Ã©chelle du continent.
 
 ---
 
 ## La solution
 
-CyberGuardian AI détecte cette fraude en temps réel en croisant deux signaux que seul l'opérateur peut voir ensemble : les **événements réseau** (changement de SIM, appareil utilisé, antenne) et les **transactions mobile money**.
+CyberGuardian AI dÃ©tecte cette fraude en temps rÃ©el en croisant deux signaux que seul l'opÃ©rateur peut voir ensemble : les **Ã©vÃ©nements rÃ©seau** (changement de SIM, appareil utilisÃ©, antenne) et les **transactions mobile money**.
 
-Quand la combinaison est suspecte, le système agit **avant que l'argent ne sorte**.
+Quand la combinaison est suspecte, le systÃ¨me agit **avant que l'argent ne sorte**.
 
 ---
 
 ## Architecture
 
-### Moteur IA — 3 couches
+### Moteur IA â€” 3 couches
 
 ```
 Transaction entrante
-        │
-        ▼
-┌───────────────────────────────────────────┐
-│  Couche 1 — Règles expertes (IA-4)  ✅   │
-│  10 règles YAML (R01–R10)                 │
-│  Rechargement à chaud depuis S3/MinIO     │
-│  Score max parmi les règles déclenchées   │
-└──────────────────┬────────────────────────┘
-                   │
-                   ▼
-┌───────────────────────────────────────────┐
-│  Couche 2 — Détection d'anomalies (IA-5) ✅│
-│  Isolation Forest + z-score Welford       │
-│  Formule hybride : IF principal,          │
-│  z-score override aux seuils 3σ et 5σ    │
-└──────────────────┬────────────────────────┘
-                   │
-                   ▼
-┌───────────────────────────────────────────┐
-│  Couche 3 — Modèle supervisé (IA-6)  ✅  │
-│  XGBoost (local) ou SageMaker Training    │
-│  scale_pos_weight, CV stratifiée 5 folds  │
-│  SHAP top-3 par transaction               │
-└──────────────────┬────────────────────────┘
-                   │
-                   ▼
-         Score 0–100 → PASS / CHALLENGE / BLOCK
+        â”‚
+        â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  Couche 1 â€” RÃ¨gles expertes (IA-4)  âœ…   â”‚
+â”‚  10 rÃ¨gles YAML (R01â€“R10)                 â”‚
+â”‚  Rechargement Ã  chaud depuis S3/MinIO     â”‚
+â”‚  Score max parmi les rÃ¨gles dÃ©clenchÃ©es   â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                   â”‚
+                   â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  Couche 2 â€” DÃ©tection d'anomalies (IA-5) âœ…â”‚
+â”‚  Isolation Forest + z-score Welford       â”‚
+â”‚  Formule hybride : IF principal,          â”‚
+â”‚  z-score override aux seuils 3Ïƒ et 5Ïƒ    â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                   â”‚
+                   â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚  Couche 3 â€” ModÃ¨le supervisÃ© (IA-6)  âœ…  â”‚
+â”‚  XGBoost (local) ou SageMaker Training    â”‚
+â”‚  scale_pos_weight, CV stratifiÃ©e 5 folds  â”‚
+â”‚  SHAP top-3 par transaction               â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                   â”‚
+                   â–¼
+         Score 0â€“100 â†’ PASS / CHALLENGE / BLOCK
 ```
 
-### Infrastructure — Local → AWS
+### Infrastructure â€” Local â†’ AWS
 
 | Composant | Local | AWS |
 |---|---|---|
-| Bus d'événements | Redpanda (Kafka) | Kinesis Data Streams |
+| Bus d'Ã©vÃ©nements | Redpanda (Kafka) | Kinesis Data Streams |
 | Feature store | Redis | DynamoDB |
 | Base relationnelle | PostgreSQL | RDS PostgreSQL |
 | Stockage objets | MinIO | S3 |
 | API de scoring | Docker Compose | ECS Fargate |
-| Entraînement | Local | SageMaker Training Jobs |
+| EntraÃ®nement | Local | SageMaker Training Jobs |
 
-> Le code est **agnostique du cloud** — les services AWS sont accédés via `interfaces/streams.py` et `interfaces/store.py`. Un redéploiement on-premise chez l'opérateur reste possible sans réécriture.
+> Le code est **agnostique du cloud** â€” les services AWS sont accÃ©dÃ©s via `interfaces/streams.py` et `interfaces/store.py`. Un redÃ©ploiement on-premise chez l'opÃ©rateur reste possible sans rÃ©Ã©criture.
 
 ---
 
@@ -74,121 +74,121 @@ Transaction entrante
 
 ```
 CyberGradianAI/
-│
-├── cyberguardian/
-│   │
-│   ├── simulator/                    # IA-1 — Simulateur de données ✅
-│   │   ├── subscribers.py            # 500 abonnés sénégalais (seed=42)
-│   │   ├── profiles.py               # Profils comportementaux → Redis / DynamoDB
-│   │   ├── scenarios.py              # 7 scénarios (3 fraudes, 4 légitimes)
-│   │   ├── publisher.py              # Publication dans Kafka / Kinesis
-│   │   ├── main.py                   # Point d'entrée (batch | replay)
-│   │   └── Dockerfile
-│   │
-│   ├── engine/
-│   │   ├── __init__.py
-│   │   ├── features/                 # IA-3 — Feature Updater ✅
-│   │   │   ├── updater.py            # Logique métier pure (Welford, fenêtres, sets)
-│   │   │   ├── handlers.py           # Dispatch topic → store (FeatureHandler)
-│   │   │   ├── main.py               # Boucle de consommation Kafka persistante
-│   │   │   └── Dockerfile            # Image légère (requirements-updater.txt)
-│   │   ├── rules/                    # IA-4 — Moteur de règles expertes ✅
-│   │   │   ├── rules.yaml            # 10 règles YAML documentées (R01–R10)
-│   │   │   ├── features.py           # Calcul des features dérivées à la volée
-│   │   │   ├── engine.py             # Évaluation + rechargement à chaud S3/fichier
-│   │   │   └── __init__.py
-│   │   ├── anomaly/                  # IA-5 — Isolation Forest ✅
-│   │   │   ├── dataset.py            # Double filtre NORMAL+label=0, split stratifié
-│   │   │   ├── train.py              # IsolationForest + RobustScaler, champion/challenger
-│   │   │   ├── detector.py           # AnomalyDetector, formule hybride IF + z-score
-│   │   │   ├── evaluate.py           # AUC-PR, rappel@1%FPR, rapport S3
-│   │   │   └── __init__.py
-│   │   ├── supervised/               # IA-6 — XGBoost supervisé ✅
-│   │   │   ├── dataset.py            # Toutes classes, scale_pos_weight, export Parquet
-│   │   │   ├── train.py              # XGBoost local + SageMaker stub, champion/challenger
-│   │   │   ├── detector.py           # XGBoostDetector, SHAP top-3, rechargement à chaud
-│   │   │   ├── evaluate.py           # AUC-PR, SHAP globale, rapport S3
-│   │   │   └── __init__.py
-│   │   └── scoring_api/              # IA-7 — API FastAPI + /reload-rules (à faire)
-│   │
-│   ├── interfaces/
-│   │   ├── streams.py                # Abstraction Kafka ↔ Kinesis
-│   │   └── store.py                  # Abstraction Redis/MinIO ↔ DynamoDB/S3
-│   │
-│   ├── infra/                        # IA-9 — Infrastructure Terraform AWS (à faire)
-│   │
-│   ├── docs/
-│   │   └── dictionnaire_features.md  # IA-2 — 12 features documentées ✅
-│   │
-│   ├── notebooks/
-│   │   └── 01_EDA_simulateur.ipynb   # EDA Phase 1
-│   │
-│   ├── docker-compose.yml            # Stack locale complète
-│   ├── requirements.txt              # Dépendances Python complètes (API + ML)
-│   ├── requirements-updater.txt      # Dépendances minimales du feature-updater
-│   └── .gitignore
-│
-└── README.md
+â”‚
+â”œâ”€â”€ cyberguardian/
+â”‚   â”‚
+â”‚   â”œâ”€â”€ simulator/                    # IA-1 â€” Simulateur de donnÃ©es âœ…
+â”‚   â”‚   â”œâ”€â”€ subscribers.py            # 500 abonnÃ©s sÃ©nÃ©galais (seed=42)
+â”‚   â”‚   â”œâ”€â”€ profiles.py               # Profils comportementaux â†’ Redis / DynamoDB
+â”‚   â”‚   â”œâ”€â”€ scenarios.py              # 7 scÃ©narios (3 fraudes, 4 lÃ©gitimes)
+â”‚   â”‚   â”œâ”€â”€ publisher.py              # Publication dans Kafka / Kinesis
+â”‚   â”‚   â”œâ”€â”€ main.py                   # Point d'entrÃ©e (batch | replay)
+â”‚   â”‚   â””â”€â”€ Dockerfile
+â”‚   â”‚
+â”‚   â”œâ”€â”€ engine/
+â”‚   â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”‚   â”œâ”€â”€ features/                 # IA-3 â€” Feature Updater âœ…
+â”‚   â”‚   â”‚   â”œâ”€â”€ updater.py            # Logique mÃ©tier pure (Welford, fenÃªtres, sets)
+â”‚   â”‚   â”‚   â”œâ”€â”€ handlers.py           # Dispatch topic â†’ store (FeatureHandler)
+â”‚   â”‚   â”‚   â”œâ”€â”€ main.py               # Boucle de consommation Kafka persistante
+â”‚   â”‚   â”‚   â””â”€â”€ Dockerfile            # Image lÃ©gÃ¨re (requirements-updater.txt)
+â”‚   â”‚   â”œâ”€â”€ rules/                    # IA-4 â€” Moteur de rÃ¨gles expertes âœ…
+â”‚   â”‚   â”‚   â”œâ”€â”€ rules.yaml            # 10 rÃ¨gles YAML documentÃ©es (R01â€“R10)
+â”‚   â”‚   â”‚   â”œâ”€â”€ features.py           # Calcul des features dÃ©rivÃ©es Ã  la volÃ©e
+â”‚   â”‚   â”‚   â”œâ”€â”€ engine.py             # Ã‰valuation + rechargement Ã  chaud S3/fichier
+â”‚   â”‚   â”‚   â””â”€â”€ __init__.py
+â”‚   â”‚   â”œâ”€â”€ anomaly/                  # IA-5 â€” Isolation Forest âœ…
+â”‚   â”‚   â”‚   â”œâ”€â”€ dataset.py            # Double filtre NORMAL+label=0, split stratifiÃ©
+â”‚   â”‚   â”‚   â”œâ”€â”€ train.py              # IsolationForest + RobustScaler, champion/challenger
+â”‚   â”‚   â”‚   â”œâ”€â”€ detector.py           # AnomalyDetector, formule hybride IF + z-score
+â”‚   â”‚   â”‚   â”œâ”€â”€ evaluate.py           # AUC-PR, rappel@1%FPR, rapport S3
+â”‚   â”‚   â”‚   â””â”€â”€ __init__.py
+â”‚   â”‚   â”œâ”€â”€ supervised/               # IA-6 â€” XGBoost supervisÃ© âœ…
+â”‚   â”‚   â”‚   â”œâ”€â”€ dataset.py            # Toutes classes, scale_pos_weight, export Parquet
+â”‚   â”‚   â”‚   â”œâ”€â”€ train.py              # XGBoost local + SageMaker stub, champion/challenger
+â”‚   â”‚   â”‚   â”œâ”€â”€ detector.py           # XGBoostDetector, SHAP top-3, rechargement Ã  chaud
+â”‚   â”‚   â”‚   â”œâ”€â”€ evaluate.py           # AUC-PR, SHAP globale, rapport S3
+â”‚   â”‚   â”‚   â””â”€â”€ __init__.py
+â”‚   â”‚   â””â”€â”€ scoring_api/              # IA-7 â€” API FastAPI + /reload-rules (Ã  faire)
+â”‚   â”‚
+â”‚   â”œâ”€â”€ interfaces/
+â”‚   â”‚   â”œâ”€â”€ streams.py                # Abstraction Kafka â†” Kinesis
+â”‚   â”‚   â””â”€â”€ store.py                  # Abstraction Redis/MinIO â†” DynamoDB/S3
+â”‚   â”‚
+â”‚   â”œâ”€â”€ infra/                        # IA-9 â€” Infrastructure Terraform AWS (Ã  faire)
+â”‚   â”‚
+â”‚   â”œâ”€â”€ docs/
+â”‚   â”‚   â””â”€â”€ dictionnaire_features.md  # IA-2 â€” 12 features documentÃ©es âœ…
+â”‚   â”‚
+â”‚   â”œâ”€â”€ notebooks/
+â”‚   â”‚   â””â”€â”€ 01_EDA_simulateur.ipynb   # EDA Phase 1
+â”‚   â”‚
+â”‚   â”œâ”€â”€ docker-compose.yml            # Stack locale complÃ¨te
+â”‚   â”œâ”€â”€ requirements.txt              # DÃ©pendances Python complÃ¨tes (API + ML)
+â”‚   â”œâ”€â”€ requirements-updater.txt      # DÃ©pendances minimales du feature-updater
+â”‚   â””â”€â”€ .gitignore
+â”‚
+â””â”€â”€ README.md
 ```
 
 ---
 
 ## Avancement
 
-| Tâche | Description | Statut |
+| TÃ¢che | Description | Statut |
 |---|---|---|
-| IA-1 | Simulateur (500 abonnés, 7 scénarios, 22 793 événements) | ✅ Fait |
-| IA-2 | Dictionnaire de features (12 features documentées) | ✅ Fait |
-| IA-3 | Feature Updater (Welford, fenêtres glissantes, sets) | ✅ Fait + testé Docker |
-| IA-4 | Moteur de règles YAML (10 règles R01–R10, rechargeable S3) | ✅ Fait + 46/46 tests |
-| IA-5 | Détection d'anomalies (Isolation Forest + z-scores) | ✅ Fait + 34/34 tests |
-| IA-6 | XGBoost (local + SageMaker stub) + SHAP + champion/challenger | ✅ Fait + 47/47 tests |
-| IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | ⏳ À faire |
-| IA-8 | Harnais d'évaluation + CI GitHub Actions | ⏳ À faire |
-| IA-9 | Socle Terraform AWS (Kinesis, DynamoDB, S3, ECS…) | ⏳ À faire |
-| IA-10 | Fiche technique 2 pages pour le jury | ⏳ À faire |
+| IA-1 | Simulateur (500 abonnÃ©s, 7 scÃ©narios, 22 793 Ã©vÃ©nements) | âœ… Fait |
+| IA-2 | Dictionnaire de features (12 features documentÃ©es) | âœ… Fait |
+| IA-3 | Feature Updater (Welford, fenÃªtres glissantes, sets) | âœ… Fait + testÃ© Docker |
+| IA-4 | Moteur de rÃ¨gles YAML (10 rÃ¨gles R01â€“R10, rechargeable S3) | âœ… Fait + 46/46 tests |
+| IA-5 | DÃ©tection d'anomalies (Isolation Forest + z-scores) | âœ… Fait + 34/34 tests |
+| IA-6 | XGBoost (local + SageMaker stub) + SHAP + champion/challenger | âœ… Fait + 47/47 tests |
+| IA-7 | API FastAPI scoring + `/reload-rules` sur ECS Fargate | â³ Ã€ faire |
+| IA-8 | Harnais d'Ã©valuation + CI GitHub Actions | â³ Ã€ faire |
+| IA-9 | Socle Terraform AWS (Kinesis, DynamoDB, S3, ECSâ€¦) | â³ Ã€ faire |
+| IA-10 | Fiche technique 2 pages pour le jury | â³ Ã€ faire |
 
 ---
 
-## Données simulées
+## DonnÃ©es simulÃ©es
 
 ### Topics Kafka / Kinesis
 
-| Topic | Champs clés | Label |
+| Topic | Champs clÃ©s | Label |
 |---|---|---|
 | `sim-events` | `id_compte`, `ancien_iccid`, `nouveau_iccid`, `device_id`, `antenne`, `horodatage` | `1` (fraude) |
-| `otp-events` | `id_compte`, `motif`, `antenne`, `horodatage` | — |
+| `otp-events` | `id_compte`, `motif`, `antenne`, `horodatage` | â€” |
 | `transactions` | `id_compte`, `montant`, `solde_avant`, `solde_apres`, `device_id`, `antenne`, `horodatage` | `0` ou `1` |
 
-### Scénarios simulés
+### ScÃ©narios simulÃ©s
 
-| Scénario | Description | Label |
+| ScÃ©nario | Description | Label |
 |---|---|---|
-| `NORMAL` | Transaction normale dans les habitudes de l'abonné | 0 |
-| `SIM_SWAP_SIMPLE` | Swap SIM + 1 gros transfert vers bénéficiaire inconnu | 1 |
-| `SIM_SWAP_CASCADE` | Swap SIM + vidage en cascade (3 à 7 transferts rapides) | 1 |
-| `PIC_OTP` | Pic de demandes OTP (5 à 10) suivi d'un transfert frauduleux | 1 |
-| `SWAP_LEGITIME` | Changement de SIM normal (même device, antenne locale) | 0 |
-| `NOUVEAU_DEVICE_LEGITIME` | Nouveau téléphone, comportement habituel sinon | 0 |
-| `GROS_MONTANT_LEGITIME` | Grosse transaction ponctuelle, device et bénéficiaire connus | 0 |
-| `VOYAGE_LEGITIME` | Transaction depuis une autre région, profil normal sinon | 0 |
+| `NORMAL` | Transaction normale dans les habitudes de l'abonnÃ© | 0 |
+| `SIM_SWAP_SIMPLE` | Swap SIM + 1 gros transfert vers bÃ©nÃ©ficiaire inconnu | 1 |
+| `SIM_SWAP_CASCADE` | Swap SIM + vidage en cascade (3 Ã  7 transferts rapides) | 1 |
+| `PIC_OTP` | Pic de demandes OTP (5 Ã  10) suivi d'un transfert frauduleux | 1 |
+| `SWAP_LEGITIME` | Changement de SIM normal (mÃªme device, antenne locale) | 0 |
+| `NOUVEAU_DEVICE_LEGITIME` | Nouveau tÃ©lÃ©phone, comportement habituel sinon | 0 |
+| `GROS_MONTANT_LEGITIME` | Grosse transaction ponctuelle, device et bÃ©nÃ©ficiaire connus | 0 |
+| `VOYAGE_LEGITIME` | Transaction depuis une autre rÃ©gion, profil normal sinon | 0 |
 
 ### Politique de scoring
 
-| Score | Décision | Action |
+| Score | DÃ©cision | Action |
 |---|---|---|
-| 0 – 29 | `PASS` | Transaction laissée passer |
-| 30 – 69 | `CHALLENGE` | Vérification supplémentaire |
-| 70 – 89 | `BLOCK` | Transaction bloquée + alerte analyste |
-| 90 – 100 | `BLOCK` | Blocage immédiat + priorité haute |
+| 0 â€“ 29 | `PASS` | Transaction laissÃ©e passer |
+| 30 â€“ 69 | `CHALLENGE` | VÃ©rification supplÃ©mentaire |
+| 70 â€“ 89 | `BLOCK` | Transaction bloquÃ©e + alerte analyste |
+| 90 â€“ 100 | `BLOCK` | Blocage immÃ©diat + prioritÃ© haute |
 
 ---
 
-## Démarrage rapide — tester le pipeline complet
+## DÃ©marrage rapide â€” tester le pipeline complet
 
-### Prérequis
+### PrÃ©requis
 
-- Docker Desktop avec WSL2 activé (Windows)
+- Docker Desktop avec WSL2 activÃ© (Windows)
 - Python 3.11+
 - Git
 
@@ -199,15 +199,15 @@ git clone https://github.com/El-khalilDione99/CyberGradianAI.git
 cd CyberGradianAI/cyberguardian
 ```
 
-### 2. Démarrer l'infrastructure
+### 2. DÃ©marrer l'infrastructure
 
-Lance Redpanda, Redis, PostgreSQL et MinIO. Les services `redpanda-init` et `minio-init` créent automatiquement les topics Kafka, les buckets MinIO **et uploadent `rules.yaml` dans MinIO** au démarrage.
+Lance Redpanda, Redis, PostgreSQL et MinIO. Les services `redpanda-init` et `minio-init` crÃ©ent automatiquement les topics Kafka, les buckets MinIO **et uploadent `rules.yaml` dans MinIO** au dÃ©marrage.
 
 ```bash
 docker compose up redpanda redis postgres minio redpanda-init minio-init -d
 ```
 
-Vérifier que tout est healthy :
+VÃ©rifier que tout est healthy :
 
 ```bash
 docker compose ps
@@ -238,22 +238,22 @@ docker run -d --name cg_feature_updater \
 docker compose --profile simulator run --rm simulator --mode batch --reset-profiles
 ```
 
-Le simulateur publie ~23 000 événements dans les 3 topics Kafka. Le Feature Updater les consomme et met à jour les 500 profils dans Redis.
+Le simulateur publie ~23 000 Ã©vÃ©nements dans les 3 topics Kafka. Le Feature Updater les consomme et met Ã  jour les 500 profils dans Redis.
 
-### 5. Vérifier le pipeline
+### 5. VÃ©rifier le pipeline
 
 ```bash
-# 500 profils créés dans Redis
+# 500 profils crÃ©Ã©s dans Redis
 docker exec cg_redis redis-cli DBSIZE
 
-# Inspecter un profil mis à jour
+# Inspecter un profil mis Ã  jour
 docker exec cg_redis redis-cli GET "profile:CPT-<hash>"
 
 # Logs du Feature Updater (doit afficher ~28 msg/s, 0 erreur)
 docker logs cg_feature_updater --tail 20
 ```
 
-Vérifier que `rules.yaml` est bien stocké dans MinIO :
+VÃ©rifier que `rules.yaml` est bien stockÃ© dans MinIO :
 
 ```bash
 docker run --rm --network cyberguardian_default \
@@ -262,12 +262,12 @@ docker run --rm --network cyberguardian_default \
    && mc ls local/cg-models/ --recursive"
 ```
 
-Résultat attendu :
+RÃ©sultat attendu :
 ```
 [2026-08-19 13:06:20 UTC] 7.4KiB STANDARD rules/rules.yaml
 ```
 
-Si le fichier est absent (premier démarrage avant la création des règles), l'uploader manuellement :
+Si le fichier est absent (premier dÃ©marrage avant la crÃ©ation des rÃ¨gles), l'uploader manuellement :
 
 ```bash
 docker run --rm --network cyberguardian_default \
@@ -282,7 +282,7 @@ docker run --rm --network cyberguardian_default \
 > **Note Windows** : remplacer `$(pwd)` par le chemin absolu, ex :
 > `-v "c:\Users\adjie\...\cyberguardian\engine\rules:/rules:ro"`
 
-Vérifier le contenu du fichier uploadé :
+VÃ©rifier le contenu du fichier uploadÃ© :
 
 ```bash
 docker run --rm --network cyberguardian_default \
@@ -291,15 +291,15 @@ docker run --rm --network cyberguardian_default \
    && mc cat local/cg-models/rules/rules.yaml | head -5"
 ```
 
-Résultat attendu :
+RÃ©sultat attendu :
 ```
-# CyberGuardian AI — Moteur de règles (Couche 1) — IA-4
-# Version: 1.0 (baseline complète — 10/10 règles finalisées)
+# CyberGuardian AI â€” Moteur de rÃ¨gles (Couche 1) â€” IA-4
+# Version: 1.0 (baseline complÃ¨te â€” 10/10 rÃ¨gles finalisÃ©es)
 ```
 
-### 6. Tester le moteur de règles en Python
+### 6. Tester le moteur de rÃ¨gles en Python
 
-Sans infrastructure, la logique des règles est testable directement :
+Sans infrastructure, la logique des rÃ¨gles est testable directement :
 
 ```bash
 cd cyberguardian
@@ -308,9 +308,9 @@ from engine.rules import RuleEngine, compute_features
 from datetime import datetime, timezone
 
 engine = RuleEngine()
-print(f'Moteur chargé : {engine.rules_count} règles')
+print(f'Moteur chargÃ© : {engine.rules_count} rÃ¨gles')
 
-# Scénario SIM_SWAP_SIMPLE
+# ScÃ©nario SIM_SWAP_SIMPLE
 event = {
     'id_compte': 'CPT-test',
     'horodatage': '2026-07-14T09:15:00+00:00',
@@ -332,14 +332,14 @@ profile = {
 }
 result = engine.evaluate(event, profile)
 print(f'Score : {result.score}')
-print(f'Règles : {[m.rule_id for m in result.matches]}')
-print(f'Décision : BLOCK' if result.score >= 70 else 'PASS/CHALLENGE')
+print(f'RÃ¨gles : {[m.rule_id for m in result.matches]}')
+print(f'DÃ©cision : BLOCK' if result.score >= 70 else 'PASS/CHALLENGE')
 "
 ```
 
-Résultat attendu : **score 93, règles R01 R02 R03 R04 R05 R06 R07 R09 R10 déclenchées**.
+RÃ©sultat attendu : **score 93, rÃ¨gles R01 R02 R03 R04 R05 R06 R07 R09 R10 dÃ©clenchÃ©es**.
 
-### 7. Vérifier les données Kafka
+### 7. VÃ©rifier les donnÃ©es Kafka
 
 ```bash
 docker exec cg_redpanda rpk topic consume transactions \
@@ -348,50 +348,50 @@ docker exec cg_redpanda rpk topic consume transactions \
 
 ---
 
-## Feature Updater — fonctionnement (IA-3)
+## Feature Updater â€” fonctionnement (IA-3)
 
-Le Feature Updater écoute en permanence les 3 topics Kafka et met à jour les profils abonnés dans Redis. C'est la mémoire vivante du système — sans lui, le moteur de règles n'a pas de contexte comportemental.
+Le Feature Updater Ã©coute en permanence les 3 topics Kafka et met Ã  jour les profils abonnÃ©s dans Redis. C'est la mÃ©moire vivante du systÃ¨me â€” sans lui, le moteur de rÃ¨gles n'a pas de contexte comportemental.
 
 ```
-Kafka topics                Redis (profil abonné)
-──────────────              ─────────────────────
-transactions  ──┐           nb_transactions, montant_moyen (Welford)
-sim-events    ──┼──► FU ──► ts_dernier_swap, nb_swaps_30j, iccid_actuel
-otp-events    ──┘           nb_otp_1h (fenêtre glissante), nb_otp_24h
+Kafka topics                Redis (profil abonnÃ©)
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€              â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+transactions  â”€â”€â”           nb_transactions, montant_moyen (Welford)
+sim-events    â”€â”€â”¼â”€â”€â–º FU â”€â”€â–º ts_dernier_swap, nb_swaps_30j, iccid_actuel
+otp-events    â”€â”€â”˜           nb_otp_1h (fenÃªtre glissante), nb_otp_24h
                             nb_tx_1h / nb_tx_24h / nb_tx_7j
                             devices_connus, beneficiaires_connus
                             solde, antennes_connues
 ```
 
 **Algorithme de Welford** : moyenne et variance en O(1) sans stocker l'historique.
-**Performance mesurée** : ~28 msg/s, 0 erreur sur 22 793 événements simulés.
+**Performance mesurÃ©e** : ~28 msg/s, 0 erreur sur 22 793 Ã©vÃ©nements simulÃ©s.
 
 ---
 
-## Moteur de règles — fonctionnement (IA-4)
+## Moteur de rÃ¨gles â€” fonctionnement (IA-4)
 
-Le moteur de règles est la Couche 1 du scoring. Il évalue 10 règles YAML contre les features calculées à la volée et retourne le score le plus élevé parmi les règles déclenchées.
+Le moteur de rÃ¨gles est la Couche 1 du scoring. Il Ã©value 10 rÃ¨gles YAML contre les features calculÃ©es Ã  la volÃ©e et retourne le score le plus Ã©levÃ© parmi les rÃ¨gles dÃ©clenchÃ©es.
 
-### Les 10 règles (R01–R10)
+### Les 10 rÃ¨gles (R01â€“R10)
 
-| Règle | Nom | Logique | Score | Statut seuil |
+| RÃ¨gle | Nom | Logique | Score | Statut seuil |
 |---|---|---|---|---|
-| R01 | SIM swap récent + montant important | `hours_since_swap < 1h` ET `amount_ratio > 3` | 92 | EDA v3 |
+| R01 | SIM swap rÃ©cent + montant important | `hours_since_swap < 1h` ET `amount_ratio > 3` | 92 | EDA v3 |
 | R02 | Nouveau device + montant important | `new_device` ET `amount_ratio > 3` | 78 | EDA v3 |
-| R03 | Nouveau device après swap SIM | `new_device` ET `hours_since_swap < 2h` | 93 | EDA v3 |
+| R03 | Nouveau device aprÃ¨s swap SIM | `new_device` ET `hours_since_swap < 2h` | 93 | EDA v3 |
 | R04 | Pic d'OTP | `otp_count_1h >= 3` | 72 | Baseline v1.0 |
-| R05 | Vélocité excessive | `nb_tx_1h >= 4` | 70 | Baseline v1.0 |
-| R06 | Montant très supérieur à l'habitude | `amount_ratio > 5` | 68 | Baseline v1.0 |
-| R07 | Changement géographique | `is_roaming == True` | 60 | Baseline v1.0 |
+| R05 | VÃ©locitÃ© excessive | `nb_tx_1h >= 4` | 70 | Baseline v1.0 |
+| R06 | Montant trÃ¨s supÃ©rieur Ã  l'habitude | `amount_ratio > 5` | 68 | Baseline v1.0 |
+| R07 | Changement gÃ©ographique | `is_roaming == True` | 60 | Baseline v1.0 |
 | R08 | Cascade de transferts | `nb_beneficiaires_1h >= 3` ET `nb_tx_1h >= 3` | 90 | Baseline v1.0 |
-| R09 | Nouveau bénéficiaire + montant élevé | `new_beneficiary` ET `amount_ratio > 3` | 78 | EDA v3 |
-| R10 | Accumulation de signaux faibles | 3+ signaux faibles simultanés | 88 | Baseline v1.0 |
+| R09 | Nouveau bÃ©nÃ©ficiaire + montant Ã©levÃ© | `new_beneficiary` ET `amount_ratio > 3` | 78 | EDA v3 |
+| R10 | Accumulation de signaux faibles | 3+ signaux faibles simultanÃ©s | 88 | Baseline v1.0 |
 
-> R01, R02, R03, R09 ont leurs seuils validés par l'EDA v3. Les autres (R04–R08, R10) seront recalibrés via le harnais IA-8 dès que du volume de scoring réel est disponible.
+> R01, R02, R03, R09 ont leurs seuils validÃ©s par l'EDA v3. Les autres (R04â€“R08, R10) seront recalibrÃ©s via le harnais IA-8 dÃ¨s que du volume de scoring rÃ©el est disponible.
 
-### Features calculées à la volée
+### Features calculÃ©es Ã  la volÃ©e
 
-Ces features ne sont pas stockées dans Redis — elles sont dérivées au moment du scoring depuis l'événement courant + le profil abonné :
+Ces features ne sont pas stockÃ©es dans Redis â€” elles sont dÃ©rivÃ©es au moment du scoring depuis l'Ã©vÃ©nement courant + le profil abonnÃ© :
 
 | Feature | Formule |
 |---|---|
@@ -403,51 +403,51 @@ Ces features ne sont pas stockées dans Redis — elles sont dérivées au momen
 | `otp_count_1h` | `nb_otp_1h` (depuis le profil Redis) |
 | `zscore_montant` | `(montant - montant_moyen) / ecart_type` |
 
-### Rechargement à chaud
+### Rechargement Ã  chaud
 
-En local : le moteur lit `engine/rules/rules.yaml` (monté comme volume).
-En AWS : si le fichier local est absent, le moteur télécharge `cg-models/rules/rules.yaml` depuis S3. L'endpoint `/reload-rules` (IA-7, à faire) déclenchera ce rechargement sans redémarrage du conteneur.
+En local : le moteur lit `engine/rules/rules.yaml` (montÃ© comme volume).
+En AWS : si le fichier local est absent, le moteur tÃ©lÃ©charge `cg-models/rules/rules.yaml` depuis S3. L'endpoint `/reload-rules` (IA-7, Ã  faire) dÃ©clenchera ce rechargement sans redÃ©marrage du conteneur.
 
 ---
 
-## Détection d'anomalies — fonctionnement (IA-5)
+## DÃ©tection d'anomalies â€” fonctionnement (IA-5)
 
-La Couche 2 détecte les comportements inhabituels sans labels — elle apprend le trafic normal et signale tout ce qui s'en écarte.
+La Couche 2 dÃ©tecte les comportements inhabituels sans labels â€” elle apprend le trafic normal et signale tout ce qui s'en Ã©carte.
 
-**Isolation Forest** entraîné uniquement sur les transactions `type_scenario=NORMAL` (double filtre). Score normalisé 0-100 : 0 = comportement typique, 100 = forte anomalie.
+**Isolation Forest** entraÃ®nÃ© uniquement sur les transactions `type_scenario=NORMAL` (double filtre). Score normalisÃ© 0-100 : 0 = comportement typique, 100 = forte anomalie.
 
-**Formule hybride** (décidée en amont, pas improvisée au code) :
+**Formule hybride** (dÃ©cidÃ©e en amont, pas improvisÃ©e au code) :
 ```
 score_couche2 = score_IF
-  si zscore_montant > 3.0  →  score = max(score_IF, 75)   # override soft
-  si zscore_montant > 5.0  →  score = max(score_IF, 90)   # override hard
-  (ignoré si nb_transactions < 10 — std Welford instable)
+  si zscore_montant > 3.0  â†’  score = max(score_IF, 75)   # override soft
+  si zscore_montant > 5.0  â†’  score = max(score_IF, 90)   # override hard
+  (ignorÃ© si nb_transactions < 10 â€” std Welford instable)
 ```
 
-**15 features** (hours_since_sim_swap exclu — `inf` pollue RobustScaler).
-**Split stratifié par abonné** : garantit qu'un abonné ne soit pas à la fois dans train ET test.
+**15 features** (hours_since_sim_swap exclu â€” `inf` pollue RobustScaler).
+**Split stratifiÃ© par abonnÃ©** : garantit qu'un abonnÃ© ne soit pas Ã  la fois dans train ET test.
 **Versionnage** : `cg-models/anomaly/production/current.json` pointe vers le champion.
 
 ---
 
-## XGBoost supervisé — fonctionnement (IA-6)
+## XGBoost supervisÃ© â€” fonctionnement (IA-6)
 
-La Couche 3 apprend directement les patterns de fraude à partir des labels.
+La Couche 3 apprend directement les patterns de fraude Ã  partir des labels.
 
-**17 features** (15 de IA-5 + `hours_since_sim_swap` géré par XGBoost + `solde`).
-`hours_since_sim_swap = inf` → remplacé par `9999.0` (les arbres tolèrent les valeurs extrêmes).
+**17 features** (15 de IA-5 + `hours_since_sim_swap` gÃ©rÃ© par XGBoost + `solde`).
+`hours_since_sim_swap = inf` â†’ remplacÃ© par `9999.0` (les arbres tolÃ¨rent les valeurs extrÃªmes).
 
-**scale_pos_weight = n_légitimes / n_fraudes** : compense le déséquilibre sans SMOTE.
-Avec ~2% de fraudes → `scale_pos_weight ≈ 50`, chaque fraude pèse 50× plus dans la perte.
+**scale_pos_weight = n_lÃ©gitimes / n_fraudes** : compense le dÃ©sÃ©quilibre sans SMOTE.
+Avec ~2% de fraudes â†’ `scale_pos_weight â‰ˆ 50`, chaque fraude pÃ¨se 50Ã— plus dans la perte.
 
-**Validation croisée stratifiée 5 folds** : chaque fold contient la même proportion de fraudes.
-Métrique d'optimisation : **AUC-PR** (pas accuracy, pas AUC-ROC).
+**Validation croisÃ©e stratifiÃ©e 5 folds** : chaque fold contient la mÃªme proportion de fraudes.
+MÃ©trique d'optimisation : **AUC-PR** (pas accuracy, pas AUC-ROC).
 
-**Deux modes d'entraînement** :
+**Deux modes d'entraÃ®nement** :
 - Local (`ENV=local`) : XGBoost Python direct, quelques secondes
-- SageMaker (`ENV=aws + USE_SAGEMAKER=true`) : Training Job ml.m5.large, ~5 min, sans endpoint d'inférence permanent
+- SageMaker (`ENV=aws + USE_SAGEMAKER=true`) : Training Job ml.m5.large, ~5 min, sans endpoint d'infÃ©rence permanent
 
-**SHAP top-3** : chaque prédiction retourne les 3 features qui ont le plus contribué, avec direction (`fraud` ou `legitimate`). Exemple :
+**SHAP top-3** : chaque prÃ©diction retourne les 3 features qui ont le plus contribuÃ©, avec direction (`fraud` ou `legitimate`). Exemple :
 ```json
 [
   {"feature": "new_device",   "value": 1.0,  "shap": 0.42, "direction": "fraud"},
@@ -456,10 +456,10 @@ Métrique d'optimisation : **AUC-PR** (pas accuracy, pas AUC-ROC).
 ]
 ```
 
-**Champion/challenger** basé sur AUC-PR :
-- Pas de champion → promotion automatique
-- Challenger AUC-PR > champion + 0.005 → promotion
-- Historique des 20 derniers entraînements dans `xgboost/production/history.json`
+**Champion/challenger** basÃ© sur AUC-PR :
+- Pas de champion â†’ promotion automatique
+- Challenger AUC-PR > champion + 0.005 â†’ promotion
+- Historique des 20 derniers entraÃ®nements dans `xgboost/production/history.json`
 
 **Versionnage S3** :
 ```
@@ -467,51 +467,161 @@ cg-models/xgboost/
   xgboost_<YYYYMMDD_HHmmss>.pkl
   xgboost_<YYYYMMDD_HHmmss>_metrics.json
   production/
-    current.json    ← champion actif
-    history.json    ← 20 derniers entraînements
+    current.json    â† champion actif
+    history.json    â† 20 derniers entraÃ®nements
 ```
 
 ---
 
-| Service | Port hôte | Interface |
+## Tester la Couche 3 (IA-6) en local
+
+Les tests sont dans le dossier `tests/`. Pas besoin de Docker ni de Redis â€” tout tourne en mÃ©moire.
+
+### PrÃ©requis
+
+```bash
+pip install pytest
+pip install -r requirements.txt
+```
+
+### Tester la Couche 3 seule
+
+VÃ©rifie le dataset supervisÃ©, l'entraÃ®nement XGBoost, les prÃ©dictions et l'Ã©valuation AUC-PR.
+
+```bash
+cd cyberguardian
+python -m pytest tests/test_ia6.py -v
+```
+
+RÃ©sultat attendu :
+```
+tests/test_ia6.py::TestDataset::test_features_count                     PASSED
+tests/test_ia6.py::TestDataset::test_hours_since_swap_no_inf            PASSED
+tests/test_ia6.py::TestDataset::test_fraudes_dans_train_et_test         PASSED
+tests/test_ia6.py::TestDataset::test_scale_pos_weight_superieur_a_1     PASSED
+tests/test_ia6.py::TestDataset::test_pas_de_nan                         PASSED
+tests/test_ia6.py::TestTrain::test_model_key_non_vide                   PASSED
+tests/test_ia6.py::TestTrain::test_champion_promu                       PASSED
+tests/test_ia6.py::TestTrain::test_auc_pr_dans_intervalle               PASSED
+tests/test_ia6.py::TestTrain::test_current_json_cree                    PASSED
+tests/test_ia6.py::TestTrain::test_history_json_cree                    PASSED
+tests/test_ia6.py::TestTrain::test_feature_importance_presente          PASSED
+tests/test_ia6.py::TestTrain::test_cv_auc_pr_present                    PASSED
+tests/test_ia6.py::TestTrain::test_scale_pos_weight_dans_metrics        PASSED
+tests/test_ia6.py::TestPredict::test_is_ready                           PASSED
+tests/test_ia6.py::TestPredict::test_score_fraude_superieur_a_normal    PASSED
+tests/test_ia6.py::TestPredict::test_score_fraude_bloque                PASSED
+tests/test_ia6.py::TestPredict::test_score_normal_passe                 PASSED
+tests/test_ia6.py::TestPredict::test_probability_dans_intervalle        PASSED
+tests/test_ia6.py::TestPredict::test_shap_top3_non_vide                 PASSED
+tests/test_ia6.py::TestPredict::test_shap_contient_bons_champs          PASSED
+tests/test_ia6.py::TestPredict::test_mode_degrade_score_zero            PASSED
+tests/test_ia6.py::TestEvaluate::test_auc_pr_dans_intervalle            PASSED
+tests/test_ia6.py::TestEvaluate::test_score_fraudes_superieur_a_legitimess PASSED
+tests/test_ia6.py::TestEvaluate::test_confusion_4_seuils                PASSED
+tests/test_ia6.py::TestEvaluate::test_shap_importance_presente          PASSED
+tests/test_ia6.py::TestEvaluate::test_rapport_publie_dans_store         PASSED
+26 passed in ~20s
+```
+
+### Ce que ces tests vÃ©rifient
+
+| Classe | Ce qui est testÃ© |
+|---|---|
+| `TestDataset` | 17 features, pas d'inf/NaN, fraudes dans train ET test, scale_pos_weight > 1 |
+| `TestTrain` | champion promu, current.json + history.json crÃ©Ã©s, AUC-PR dans [0,1], feature_importance prÃ©sente |
+| `TestPredict` | score fraude > score normal, fraude â†’ BLOCK, normal â†’ PASS, SHAP top-3 avec direction, mode dÃ©gradÃ© = 0 |
+| `TestEvaluate` | AUC-PR valide, sÃ©paration fraudes/lÃ©gitimes, 4 seuils de confusion, SHAP globale, rapport S3 |
+
+---
+
+## Tester le pipeline des 3 couches ensemble
+
+Charge les 3 couches simultanÃ©ment et les fait scorer le mÃªme Ã©vÃ©nement.
+
+```bash
+cd cyberguardian
+python -m pytest tests/test_pipeline.py -v
+```
+
+RÃ©sultat attendu :
+```
+tests/test_pipeline.py::TestChargement::test_couche1_chargee             PASSED
+tests/test_pipeline.py::TestChargement::test_couche2_prete               PASSED
+tests/test_pipeline.py::TestChargement::test_couche3_prete               PASSED
+tests/test_pipeline.py::TestFraude::test_couche1_declenche_regles        PASSED
+tests/test_pipeline.py::TestFraude::test_couche1_score_eleve             PASSED
+tests/test_pipeline.py::TestFraude::test_couche3_score_eleve             PASSED
+tests/test_pipeline.py::TestFraude::test_score_final_bloque              PASSED
+tests/test_pipeline.py::TestFraude::test_shap_direction_fraude           PASSED
+tests/test_pipeline.py::TestNormal::test_couche1_aucune_regle            PASSED
+tests/test_pipeline.py::TestNormal::test_couche3_score_bas               PASSED
+tests/test_pipeline.py::TestNormal::test_couche3_passe                   PASSED
+tests/test_pipeline.py::TestDiscrimination::test_couche3_fraude_superieur_a_normal PASSED
+tests/test_pipeline.py::TestDiscrimination::test_couche1_fraude_superieur_a_normal PASSED
+13 passed in ~20s
+```
+
+### Ce que ces tests vÃ©rifient
+
+| Classe | Ce qui est testÃ© |
+|---|---|
+| `TestChargement` | Couche 1 a 10 rÃ¨gles, Couche 2 is_ready, Couche 3 is_ready |
+| `TestFraude` | RÃ¨gles dÃ©clenchÃ©es, score C1 â‰¥ 70, score C3 â‰¥ 70, score final â‰¥ 70 â†’ BLOCK, SHAP pointe vers "fraud" |
+| `TestNormal` | Couche 1 score = 0 (aucune rÃ¨gle), Couche 3 score < 30 â†’ PASS |
+| `TestDiscrimination` | Score fraude > score normal pour C1 ET C3 |
+
+### Tout lancer en une commande
+
+```bash
+cd cyberguardian
+python -m pytest tests/ -v
+```
+
+RÃ©sultat attendu : **39 passed** en ~30 secondes.
+
+> Les warnings `DeprecationWarning: datetime.datetime.utcnow()` viennent de la librairie `botocore` (AWS SDK), pas de notre code. Ils peuvent Ãªtre ignorÃ©s.
+---
+
+| Service | Port hÃ´te | Interface |
 |---|---|---|
-| Redpanda (Kafka) | `19092` | — |
-| Redis | `16379` | — |
-| PostgreSQL | `15432` | — |
-| MinIO (API) | `19000` | — |
+| Redpanda (Kafka) | `19092` | â€” |
+| Redis | `16379` | â€” |
+| PostgreSQL | `15432` | â€” |
+| MinIO (API) | `19000` | â€” |
 | MinIO (Console) | `19002` | [http://localhost:19002](http://localhost:19002) |
 
 > Identifiants MinIO : `minioadmin` / `minioadmin123`
 
 ---
 
-## Variables d'environnement clés
+## Variables d'environnement clÃ©s
 
 | Variable | Valeur locale | Description |
 |---|---|---|
-| `ENV` | `local` | `local` ou `aws` — bascule les interfaces |
+| `ENV` | `local` | `local` ou `aws` â€” bascule les interfaces |
 | `KAFKA_BOOTSTRAP_SERVERS` | `redpanda:9092` | Broker Kafka / Kinesis endpoint |
 | `REDIS_HOST` | `redis` | Host Redis / DynamoDB endpoint |
 | `REDIS_PORT` | `6379` | Port Redis |
-| `RULES_PATH` | `/app/engine/rules/rules.yaml` | Chemin du fichier de règles (volume local) |
-| `RULES_BUCKET` | `cg-models` | Bucket S3/MinIO contenant les règles |
-| `RULES_S3_KEY` | `rules/rules.yaml` | Clé S3 du fichier de règles |
-| `SCORE_THRESHOLD_LOW` | `30` | Seuil PASS → CHALLENGE |
-| `SCORE_THRESHOLD_MED` | `70` | Seuil CHALLENGE → BLOCK |
+| `RULES_PATH` | `/app/engine/rules/rules.yaml` | Chemin du fichier de rÃ¨gles (volume local) |
+| `RULES_BUCKET` | `cg-models` | Bucket S3/MinIO contenant les rÃ¨gles |
+| `RULES_S3_KEY` | `rules/rules.yaml` | ClÃ© S3 du fichier de rÃ¨gles |
+| `SCORE_THRESHOLD_LOW` | `30` | Seuil PASS â†’ CHALLENGE |
+| `SCORE_THRESHOLD_MED` | `70` | Seuil CHALLENGE â†’ BLOCK |
 | `SCORE_THRESHOLD_HIGH` | `90` | Seuil BLOCK prioritaire |
 | `FU_BATCH_SIZE` | `100` | Taille des lots Kafka pour le feature updater |
-| `SEED` | `42` | Seed globale — démo rejouable à l'identique |
+| `SEED` | `42` | Seed globale â€” dÃ©mo rejouable Ã  l'identique |
 | `IF_N_ESTIMATORS` | `200` | Nombre d'arbres Isolation Forest |
-| `IF_CONTAMINATION` | `0.02` | Proportion de fraudes estimée (2%) |
-| `Z_OVERRIDE_SOFT` | `3.0` | z-score → plancher score couche 2 à 75 |
-| `Z_OVERRIDE_HARD` | `5.0` | z-score → plancher score couche 2 à 90 |
+| `IF_CONTAMINATION` | `0.02` | Proportion de fraudes estimÃ©e (2%) |
+| `Z_OVERRIDE_SOFT` | `3.0` | z-score â†’ plancher score couche 2 Ã  75 |
+| `Z_OVERRIDE_HARD` | `5.0` | z-score â†’ plancher score couche 2 Ã  90 |
 | `XGB_N_ESTIMATORS` | `300` | Nombre d'arbres XGBoost |
 | `XGB_MAX_DEPTH` | `6` | Profondeur maximale des arbres |
 | `XGB_MIN_IMPROVEMENT` | `0.005` | Seuil AUC-PR pour promouvoir un challenger |
-| `USE_SAGEMAKER` | `false` | `true` pour entraîner via SageMaker Training Job |
-| `SAGEMAKER_ROLE_ARN` | — | ARN du rôle IAM SageMaker (AWS uniquement) |
+| `USE_SAGEMAKER` | `false` | `true` pour entraÃ®ner via SageMaker Training Job |
+| `SAGEMAKER_ROLE_ARN` | â€” | ARN du rÃ´le IAM SageMaker (AWS uniquement) |
 
-> Aucune clé AWS statique dans le code. En production : rôles IAM attachés aux tâches ECS et OIDC pour la CI.
+> Aucune clÃ© AWS statique dans le code. En production : rÃ´les IAM attachÃ©s aux tÃ¢ches ECS et OIDC pour la CI.
 
 ---
 
@@ -519,31 +629,31 @@ cg-models/xgboost/
 
 | Jalon | Date | Objectif | Statut |
 |---|---|---|---|
-| J1 | 26 juillet 2026 | Flux simulé dans Kinesis, profil mis à jour dans DynamoDB | ✅ Validé en local |
-| J2 | 23 août 2026 | Démo interne bout-en-bout sur AWS, fraude détectée et visible | ⏳ En cours |
-| J3 | 20 septembre 2026 | Modèles et infrastructure demo gelés | ⏳ |
-| J4 | 11 octobre 2026 | Reproductibilité vérifiée (démo rejouée 3 fois) | ⏳ |
-| Démo finale | Mi-octobre 2026 | Démo live devant le jury | ⏳ |
+| J1 | 26 juillet 2026 | Flux simulÃ© dans Kinesis, profil mis Ã  jour dans DynamoDB | âœ… ValidÃ© en local |
+| J2 | 23 aoÃ»t 2026 | DÃ©mo interne bout-en-bout sur AWS, fraude dÃ©tectÃ©e et visible | â³ En cours |
+| J3 | 20 septembre 2026 | ModÃ¨les et infrastructure demo gelÃ©s | â³ |
+| J4 | 11 octobre 2026 | ReproductibilitÃ© vÃ©rifiÃ©e (dÃ©mo rejouÃ©e 3 fois) | â³ |
+| DÃ©mo finale | Mi-octobre 2026 | DÃ©mo live devant le jury | â³ |
 
-> **Règle projet** : si on prend du retard, on réduit le périmètre — on ne décale jamais la date.
-
----
-
-## Principes non négociables
-
-- **Score mesurable** — on vend un score 0-100, pas une prédiction magique
-- **Explicabilité** — chaque décision est justifiable (règles nommées, SHAP)
-- **Agnosticisme cloud** — aucun appel boto3 dans la logique métier, tout passe par `interfaces/`
-- **Seeds fixes** — `SEED=42` partout, une démo doit être rejouable à l'identique
-- **Pas de MSK ni endpoint SageMaker permanent** — les deux pièges qui brûlent les crédits AWS
-- **Traçabilité des modèles** — tout modèle sérialisé est versionné dans S3 avec ses métriques
+> **RÃ¨gle projet** : si on prend du retard, on rÃ©duit le pÃ©rimÃ¨tre â€” on ne dÃ©cale jamais la date.
 
 ---
 
-## Honnêteté sur les données
+## Principes non nÃ©gociables
 
-Le système tourne sur des **données 100% simulées**, réalistes mais fictives.
-C'est assumé et documenté. L'étape suivante avec Sonatel sera un pilote sur données réelles anonymisées, en mode observation.
+- **Score mesurable** â€” on vend un score 0-100, pas une prÃ©diction magique
+- **ExplicabilitÃ©** â€” chaque dÃ©cision est justifiable (rÃ¨gles nommÃ©es, SHAP)
+- **Agnosticisme cloud** â€” aucun appel boto3 dans la logique mÃ©tier, tout passe par `interfaces/`
+- **Seeds fixes** â€” `SEED=42` partout, une dÃ©mo doit Ãªtre rejouable Ã  l'identique
+- **Pas de MSK ni endpoint SageMaker permanent** â€” les deux piÃ¨ges qui brÃ»lent les crÃ©dits AWS
+- **TraÃ§abilitÃ© des modÃ¨les** â€” tout modÃ¨le sÃ©rialisÃ© est versionnÃ© dans S3 avec ses mÃ©triques
+
+---
+
+## HonnÃªtetÃ© sur les donnÃ©es
+
+Le systÃ¨me tourne sur des **donnÃ©es 100% simulÃ©es**, rÃ©alistes mais fictives.
+C'est assumÃ© et documentÃ©. L'Ã©tape suivante avec Sonatel sera un pilote sur donnÃ©es rÃ©elles anonymisÃ©es, en mode observation.
 
 ---
 
@@ -555,8 +665,8 @@ C'est assumé et documenté. L'étape suivante avec Sonatel sera un pilote sur d
 - **Streaming** : kafka-python (local), boto3 Kinesis (AWS)
 - **Feature store** : redis-py (local), boto3 DynamoDB (AWS)
 - **Infra** : Docker Compose (local), Terraform + AWS ECS Fargate (cloud)
-- **Région AWS** : eu-west-3 (Paris)
+- **RÃ©gion AWS** : eu-west-3 (Paris)
 
 ---
 
-*CyberGuardian AI — Août 2026*
+*CyberGuardian AI â€” AoÃ»t 2026*
