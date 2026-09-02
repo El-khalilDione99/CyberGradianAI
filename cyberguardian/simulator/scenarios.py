@@ -104,9 +104,38 @@ def _montant_normal(rng: random.Random, compte: Compte) -> float:
 
 
 def _montant_fraude(rng: random.Random, compte: Compte) -> float:
-    """Montant frauduleux : facteur × montant_moyen."""
-    facteur = rng.uniform(FACTEUR_MONTANT_FRAUDE_MIN, FACTEUR_MONTANT_FRAUDE_MAX)
+    """
+    Montant frauduleux avec variabilité :
+    - 70% des fraudes : gros montant (3.0x à 12.0x)
+    - 30% des fraudes : montant discret (1.2x à 2.5x) pour simuler des attaques furtives
+    """
+    if rng.random() < 0.30:
+        facteur = rng.uniform(1.2, 2.5)
+    else:
+        facteur = rng.uniform(FACTEUR_MONTANT_FRAUDE_MIN, FACTEUR_MONTANT_FRAUDE_MAX)
     return min(compte.montant_moyen_habituel * facteur, compte.solde)
+
+
+def _beneficiaire_fraude(rng: random.Random, compte: Compte) -> str:
+    """
+    Bénéficiaire pour une fraude :
+    - 70% : nouveau bénéficiaire (inconnu)
+    - 30% : bénéficiaire connu (complice ou contact déjà vu) pour casser la fuite de données
+    """
+    if rng.random() < 0.30 and compte.beneficiaires_habituels:
+        return rng.choice(compte.beneficiaires_habituels)
+    return "BEN-" + uuid.uuid4().hex[:8].upper()
+
+
+def _beneficiaire_legitime(rng: random.Random, compte: Compte) -> str:
+    """
+    Bénéficiaire pour une transaction légitime :
+    - 65% : bénéficiaire habituel connu
+    - 35% : nouveau bénéficiaire (nouveau marchand, ticket, contact) pour simuler la vraie vie
+    """
+    if rng.random() < 0.35 or not compte.beneficiaires_habituels:
+        return "BEN-" + uuid.uuid4().hex[:8].upper()
+    return rng.choice(compte.beneficiaires_habituels)
 
 
 def _beneficiaire(rng: random.Random, compte: Compte, connu: bool = True) -> str:
@@ -233,7 +262,7 @@ def build_sim_swap_simple(compte: Compte, rng: random.Random, ts: datetime) -> S
                           TypeScenario.SIM_SWAP_SIMPLE), ts_swap),
         Evenement("transactions", compte.id_compte,
                   _ev_transaction(compte, ts_tx, _montant_fraude(rng, compte),
-                                  _beneficiaire(rng, compte, connu=False),
+                                  _beneficiaire_fraude(rng, compte),
                                   nouveau_device, antenne_att, sid, True, rng,
                                   TypeScenario.SIM_SWAP_SIMPLE), ts_tx),
     ]
@@ -281,7 +310,7 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
         ts_courant += timedelta(seconds=rng.uniform(30, 120))
         ev.append(Evenement("transactions", compte.id_compte,
                             _ev_transaction(compte, ts_courant, montant,
-                                            _beneficiaire(rng, compte, connu=False),
+                                            _beneficiaire_fraude(rng, compte),
                                             nouveau_device, antenne_att, sid, True, rng,
                                             TypeScenario.SIM_SWAP_CASCADE),
                             ts_courant))
@@ -292,7 +321,7 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
         ts_courant += timedelta(seconds=30)
         ev.append(Evenement("transactions", compte.id_compte,
                             _ev_transaction(compte, ts_courant, montant,
-                                            _beneficiaire(rng, compte, connu=False),
+                                            _beneficiaire_fraude(rng, compte),
                                             nouveau_device, antenne_att, sid, True, rng,
                                             TypeScenario.SIM_SWAP_CASCADE),
                             ts_courant))
@@ -315,13 +344,10 @@ def build_pic_otp(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
                                     TypeScenario.PIC_OTP), ts_courant))
 
     ts_tx = ts_courant + timedelta(minutes=rng.uniform(1, 5))
-    montant = min(
-        compte.montant_moyen_habituel * rng.uniform(FACTEUR_MONTANT_FRAUDE_MIN, FACTEUR_MONTANT_FRAUDE_MAX),
-        compte.solde
-    )
+    montant = _montant_fraude(rng, compte)
     ev.append(Evenement("transactions", compte.id_compte,
                         _ev_transaction(compte, ts_tx, montant,
-                                        _beneficiaire(rng, compte, connu=False),
+                                        _beneficiaire_fraude(rng, compte),
                                         nouveau_device, antenne_att, sid, True, rng,
                                         TypeScenario.PIC_OTP), ts_tx))
 
@@ -364,7 +390,7 @@ def build_nouveau_device_legitime(compte: Compte, rng: random.Random, ts: dateti
 
     ev = [Evenement("transactions", compte.id_compte,
                     _ev_transaction(compte, ts, montant,
-                                    _beneficiaire(rng, compte, connu=True),
+                                    _beneficiaire_legitime(rng, compte),
                                     nouveau_device, antenne, sid, False, rng,
                                     TypeScenario.NOUVEAU_DEVICE_LEGITIME), ts)]
     compte.device_id_habituel = nouveau_device
@@ -380,7 +406,7 @@ def build_gros_montant_legitime(compte: Compte, rng: random.Random, ts: datetime
     )
     ev = [Evenement("transactions", compte.id_compte,
                     _ev_transaction(compte, ts, montant,
-                                    _beneficiaire(rng, compte, connu=True),
+                                    _beneficiaire_legitime(rng, compte),
                                     compte.device_id_habituel, antenne, sid, False, rng,
                                     TypeScenario.GROS_MONTANT_LEGITIME), ts)]
     return Scenario(sid, TypeScenario.GROS_MONTANT_LEGITIME, compte, ev, False)
@@ -393,7 +419,7 @@ def build_voyage_legitime(compte: Compte, rng: random.Random, ts: datetime) -> S
 
     ev = [Evenement("transactions", compte.id_compte,
                     _ev_transaction(compte, ts, montant,
-                                    _beneficiaire(rng, compte, connu=True),
+                                    _beneficiaire_legitime(rng, compte),
                                     compte.device_id_habituel, antenne_voyage, sid, False, rng,
                                     TypeScenario.VOYAGE_LEGITIME), ts)]
     return Scenario(sid, TypeScenario.VOYAGE_LEGITIME, compte, ev, False)
@@ -404,7 +430,7 @@ def build_transaction_normale(compte: Compte, rng: random.Random, ts: datetime) 
     montant = _montant_normal(rng, compte)
     ev = [Evenement("transactions", compte.id_compte,
                     _ev_transaction(compte, ts, montant,
-                                    _beneficiaire(rng, compte, connu=True),
+                                    _beneficiaire_legitime(rng, compte),
                                     compte.device_id_habituel, antenne, None, False, rng,
                                     TypeScenario.NORMAL), ts)]
     return Scenario("", TypeScenario.NORMAL, compte, ev, False)
