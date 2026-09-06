@@ -94,7 +94,15 @@ def simulated_data():
                     build_gros_montant_legitime, build_voyage_legitime,
                     build_transaction_normale]
         sc = builders[i % 6](c, rng, ts)
-        events += [e.payload for e in sc.evenements if e.stream == "transactions"]
+        for ev in sc.evenements:
+            if ev.stream == "sim-events":
+                profiles[c.id_compte]["ts_dernier_swap"] = ev.payload["horodatage"]
+                profiles[c.id_compte]["nb_swaps_30j"] += 1
+            elif ev.stream == "otp-events":
+                profiles[c.id_compte]["nb_otp_1h"] += 1
+                profiles[c.id_compte]["nb_otp_24h"] += 1
+            elif ev.stream == "transactions":
+                events.append(ev.payload)
 
     return events, profiles
 

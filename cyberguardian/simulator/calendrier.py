@@ -1,13 +1,13 @@
 """
 simulator/calendrier.py
 ───────────────────────
-Génère le calendrier complet de la simulation sur 30 jours.
+Génère le calendrier complet de la simulation sur 30 jours avec évolution d'état chronologique.
 
 Responsabilités :
-  1. Planifier les transactions normales de chaque compte (loi de Poisson)
-  2. Injecter les scénarios spéciaux (fraude + légitimes faux positifs)
-     à des dates aléatoires dans la fenêtre
-  3. Retourner tous les scénarios triés par horodatage
+  1. Planifier les transactions et scénarios de chaque compte
+  2. Exécuter les événements dans l'ordre chronologique strict (mise à jour continue de l'état : solde, device, SIM)
+  3. Recharger périodiquement les soldes (salaire/dépôts) pour maintenir l'activité réaliste
+  4. Retourner tous les scénarios triés par horodatage
 
 L'ordre chronologique est garanti — le feature updater pourra
 construire les profils Welford de façon cohérente.
@@ -22,7 +22,7 @@ from simulator.subscribers import Compte
 from simulator.scenarios import (
     Scenario, TypeScenario,
     build_sim_swap_simple, build_sim_swap_cascade, build_pic_otp,
-    build_swap_legitime, build_nouveau_device_legitime,
+    build_sim_swap_discret, build_swap_legitime, build_nouveau_device_legitime,
     build_gros_montant_legitime, build_voyage_legitime,
     build_transaction_normale,
 )
@@ -31,7 +31,7 @@ from simulator.config import (
     TAUX_SCENARIO_FRAUDE, TAUX_SCENARIO_SWAP_LEGITIME,
     TAUX_SCENARIO_NOUVEAU_DEVICE_LEGITIME, TAUX_SCENARIO_GROS_MONTANT_LEGITIME,
     TAUX_TRANSACTION_VOYAGE_LEGITIME,
-    TYPES_ATTAQUE, POIDS_ATTAQUE,
+    TYPES_ATTAQUE, POIDS_ATTAQUE, SEGMENTS,
     get_date_debut,
 )
 
@@ -54,7 +54,7 @@ def planifier_simulation(
     seed: int = SEED,
 ) -> list[Scenario]:
     """
-    Génère l'ensemble des scénarios sur DUREE_SIMULATION_JOURS jours.
+    Génère l'ensemble des scénarios sur DUREE_SIMULATION_JOURS jours avec évolution d'état chronologique.
 
     Retourne une liste de Scenario triée par horodatage du premier événement.
     """
@@ -77,58 +77,80 @@ def planifier_simulation(
     comptes_gros_mt    = set(c.id_compte for c in rng.sample(comptes, nb_gros_mt))
 
     for compte in comptes:
+        actions = []  # (timestamp, action_type, sub_type)
 
-        # ── 1. Transactions normales (loi de Poisson) ──────────
+        # 1. Transactions normales de routine
         for jour in range(nb_jours):
             nb_tx_jour = np.random.poisson(TRANSACTIONS_PAR_JOUR_LAMBDA)
             for _ in range(nb_tx_jour):
                 ts = _ts_jour(rng, compte, date_debut, jour)
-                # Voyage légitime (4% des transactions)
                 if rng.random() < TAUX_TRANSACTION_VOYAGE_LEGITIME:
-                    tous_scenarios.append(build_voyage_legitime(compte, rng, ts))
+                    actions.append((ts, "VOYAGE_LEGITIME", None))
                 else:
-                    tous_scenarios.append(build_transaction_normale(compte, rng, ts))
+                    actions.append((ts, "NORMAL", None))
 
-        # ── 2. Scénario(s) fraude ──────────────────────────────
+        # 2. Fraude(s)
         if compte.id_compte in comptes_fraude:
             nb_attaques = rng.choices([1, 2, 3, 4, 5], weights=[0.30, 0.30, 0.20, 0.12, 0.08], k=1)[0]
             for _ in range(nb_attaques):
                 poids_jours = [1.0 + 0.5 * (j / nb_jours) for j in range(nb_jours)]
                 jour_fraude = rng.choices(range(nb_jours), weights=poids_jours, k=1)[0]
                 ts_fraude   = _ts_jour(rng, compte, date_debut, jour_fraude)
-
-                # Recharger le solde avant l'attaque — le fraudeur cible un compte avec de l'argent
-                # On restaure le solde initial du segment pour garantir des transactions fraudes
-                from simulator.config import SEGMENTS
-                seg_data = SEGMENTS[compte.segment]
-                if compte.solde < seg_data["solde_min"]:
-                    compte.solde = rng.uniform(seg_data["solde_min"], seg_data["solde_min"] * 3)
-
                 type_attaque = rng.choices(TYPES_ATTAQUE, weights=POIDS_ATTAQUE, k=1)[0]
-                if type_attaque == "SIM_SWAP_SIMPLE":
-                    tous_scenarios.append(build_sim_swap_simple(compte, rng, ts_fraude))
-                elif type_attaque == "SIM_SWAP_CASCADE":
-                    tous_scenarios.append(build_sim_swap_cascade(compte, rng, ts_fraude))
-                else:
-                    tous_scenarios.append(build_pic_otp(compte, rng, ts_fraude))
+                actions.append((ts_fraude, "FRAUDE", type_attaque))
 
-        # ── 3. Swap légitime ───────────────────────────────────
+        # 3. Swap légitime
         if compte.id_compte in comptes_swap_leg and compte.id_compte not in comptes_fraude:
             jour  = rng.randint(0, nb_jours - 1)
             ts    = _ts_jour(rng, compte, date_debut, jour)
-            tous_scenarios.append(build_swap_legitime(compte, rng, ts))
+            actions.append((ts, "SWAP_LEGITIME", None))
 
-        # ── 4. Nouveau device légitime ─────────────────────────
+        # 4. Nouveau device légitime
         if compte.id_compte in comptes_new_device:
             jour  = rng.randint(0, nb_jours - 1)
             ts    = _ts_jour(rng, compte, date_debut, jour)
-            tous_scenarios.append(build_nouveau_device_legitime(compte, rng, ts))
+            actions.append((ts, "NOUVEAU_DEVICE_LEGITIME", None))
 
-        # ── 5. Gros montant légitime ───────────────────────────
+        # 5. Gros montant légitime
         if compte.id_compte in comptes_gros_mt:
             jour  = rng.randint(0, nb_jours - 1)
             ts    = _ts_jour(rng, compte, date_debut, jour)
-            tous_scenarios.append(build_gros_montant_legitime(compte, rng, ts))
+            actions.append((ts, "GROS_MONTANT_LEGITIME", None))
+
+        # Trier toutes les actions de l'abonné dans l'ordre chronologique exact
+        actions.sort(key=lambda x: x[0])
+
+        seg_data = SEGMENTS[compte.segment]
+
+        # Exécuter les actions séquentiellement avec mise à jour d'état en temps réel
+        for ts, act_type, sub_type in actions:
+            # Si le solde est épuisé ou trop bas, recharger (salaire / dépôt d'argent)
+            if compte.solde < 1_000:
+                compte.solde += rng.uniform(seg_data["solde_min"], seg_data["solde_max"] * 0.5)
+
+            if act_type == "NORMAL":
+                tous_scenarios.append(build_transaction_normale(compte, rng, ts))
+            elif act_type == "VOYAGE_LEGITIME":
+                tous_scenarios.append(build_voyage_legitime(compte, rng, ts))
+            elif act_type == "SWAP_LEGITIME":
+                tous_scenarios.append(build_swap_legitime(compte, rng, ts))
+            elif act_type == "NOUVEAU_DEVICE_LEGITIME":
+                tous_scenarios.append(build_nouveau_device_legitime(compte, rng, ts))
+            elif act_type == "GROS_MONTANT_LEGITIME":
+                tous_scenarios.append(build_gros_montant_legitime(compte, rng, ts))
+            elif act_type == "FRAUDE":
+                # Garantir au fraudeur un solde suffisant pour passer l'attaque
+                if compte.solde < seg_data["solde_min"]:
+                    compte.solde = rng.uniform(seg_data["solde_min"], seg_data["solde_min"] * 3)
+
+                if sub_type == "SIM_SWAP_SIMPLE":
+                    tous_scenarios.append(build_sim_swap_simple(compte, rng, ts))
+                elif sub_type == "SIM_SWAP_CASCADE":
+                    tous_scenarios.append(build_sim_swap_cascade(compte, rng, ts))
+                elif sub_type == "PIC_OTP":
+                    tous_scenarios.append(build_pic_otp(compte, rng, ts))
+                elif sub_type == "SIM_SWAP_DISCRET":
+                    tous_scenarios.append(build_sim_swap_discret(compte, rng, ts))
 
     # ── Trier tous les scénarios par horodatage du 1er événement ──
     tous_scenarios.sort(
@@ -136,11 +158,11 @@ def planifier_simulation(
     )
 
     # ── Rapport ────────────────────────────────────────────────
-    fraudes  = sum(1 for s in tous_scenarios if s.est_fraude)
+    fraudes   = sum(1 for s in tous_scenarios if s.est_fraude)
     legitimes = len(tous_scenarios) - fraudes
-    total_ev = sum(len(s.evenements) for s in tous_scenarios)
+    total_ev  = sum(len(s.evenements) for s in tous_scenarios)
 
-    print(f"Simulation {nb_jours} jours planifiée :")
+    print(f"Simulation {nb_jours} jours planifiée (Évolution chronologique d'état) :")
     print(f"  Scénarios : {len(tous_scenarios):>6}  (fraudes={fraudes}, légitimes={legitimes})")
     print(f"  Événements: {total_ev:>6}")
 

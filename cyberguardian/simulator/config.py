@@ -75,9 +75,9 @@ ANTENNES_PAR_REGION: dict[str, list[str]] = {
 PREFIXES_ORANGE = ["77", "78", "76", "70"]
 
 # ── Scénarios de fraude ──────────────────────────────────────
-# Types d'attaque et leurs poids
-TYPES_ATTAQUE = ["SIM_SWAP_SIMPLE", "SIM_SWAP_CASCADE", "PIC_OTP"]
-POIDS_ATTAQUE = [0.25,              0.60,               0.15]
+# Types d'attaque et leurs poids (tous basés sur SIM Swap)
+TYPES_ATTAQUE = ["SIM_SWAP_SIMPLE", "SIM_SWAP_CASCADE", "PIC_OTP", "SIM_SWAP_DISCRET"]
+POIDS_ATTAQUE = [0.30,              0.35,               0.15,      0.20]
 
 # Canal du swap selon type (fraude vs légitime)
 CANAUX_SWAP_FRAUDE   = ["agence", "self_service", "centre_appel"]
@@ -85,15 +85,15 @@ POIDS_SWAP_FRAUDE    = [0.60,      0.30,           0.10]
 CANAUX_SWAP_LEGITIME = ["agence", "self_service", "centre_appel"]
 POIDS_SWAP_LEGITIME  = [0.40,      0.45,           0.15]
 
-# Délai OTP → swap en minutes
-DELAI_OTP_SWAP_FRAUDE_MIN   = 1.0    # précipitation
-DELAI_OTP_SWAP_FRAUDE_MAX   = 8.0
-DELAI_OTP_SWAP_LEGITIME_MIN = 5.0    # comportement normal
-DELAI_OTP_SWAP_LEGITIME_MAX = 90.0
+# Délai OTP → swap en minutes (chevauchement réaliste entre 2 min et 45 min)
+DELAI_OTP_SWAP_FRAUDE_MIN   = 1.0    # précipitation ou attaques différées (1 à 45 min)
+DELAI_OTP_SWAP_FRAUDE_MAX   = 45.0
+DELAI_OTP_SWAP_LEGITIME_MIN = 2.0    # réactivation rapide en agence ou normale (2 à 120 min)
+DELAI_OTP_SWAP_LEGITIME_MAX = 120.0
 
-# Montant fraude = facteur × montant_moyen_habituel
-FACTEUR_MONTANT_FRAUDE_MIN = 3.0
-FACTEUR_MONTANT_FRAUDE_MAX = 15.0
+# Montant fraude = facteur × montant_moyen_habituel (inclut micro-fraudes et gros vidages)
+FACTEUR_MONTANT_FRAUDE_MIN = 0.6
+FACTEUR_MONTANT_FRAUDE_MAX = 10.0
 
 # ── Heures actives par segment ───────────────────────────────
 HEURES_ACTIVES = {

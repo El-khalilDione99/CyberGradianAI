@@ -3,16 +3,18 @@ simulator/scenarios.py
 ──────────────────────
 Génération des scénarios sur 30 jours.
 
-Scénarios frauduleux :
-  - SIM_SWAP_SIMPLE  : swap + 1 gros transfert
-  - SIM_SWAP_CASCADE : swap + vidage en 3-7 transferts rapides
-  - PIC_OTP          : rafale d'OTP + transfert frauduleux
+Scénarios frauduleux (Périmètre SIM Swap) :
+  - SIM_SWAP_SIMPLE  : swap + 1 transfert (attaque classique : new device, antenne étrangère, montant élevé)
+  - SIM_SWAP_CASCADE : swap + transferts multiples (vidage rapide ou progressif)
+  - PIC_OTP          : rafale d'OTP + swap + transfert frauduleux
+  - SIM_SWAP_DISCRET : swap discret + transfert modéré différé (attaque furtive)
 
 Scénarios légitimes (faux positifs potentiels) :
-  - SWAP_LEGITIME          : changement de SIM normal
+  - SWAP_LEGITIME          : changement de SIM normal (50% nouveau device)
   - NOUVEAU_DEVICE_LEGITIME: nouveau téléphone
   - GROS_MONTANT_LEGITIME  : grosse transaction ponctuelle
   - VOYAGE_LEGITIME        : transaction depuis une autre région
+  - NORMAL                 : transaction courante de routine (device habituel, antenne domicile)
 
 Chaque événement est un dict prêt à être publié dans Kafka/Kinesis.
 L'ordre temporel est garanti — les événements sont triés par horodatage.
@@ -43,6 +45,7 @@ class TypeScenario(str, Enum):
     SIM_SWAP_SIMPLE           = "SIM_SWAP_SIMPLE"
     SIM_SWAP_CASCADE          = "SIM_SWAP_CASCADE"
     PIC_OTP                   = "PIC_OTP"
+    SIM_SWAP_DISCRET          = "SIM_SWAP_DISCRET"
     # Légitimes (faux positifs potentiels)
     SWAP_LEGITIME             = "SWAP_LEGITIME"
     NOUVEAU_DEVICE_LEGITIME   = "NOUVEAU_DEVICE_LEGITIME"
@@ -95,53 +98,51 @@ def _antenne_etrangere(rng: random.Random, region: str) -> str:
     return rng.choice(ANTENNES_PAR_REGION[rng.choice(autres)])
 
 
+def _device_fraude(rng: random.Random, compte: Compte) -> str:
+    """Appareil utilisé lors d'une fraude furtive (mixte)."""
+    r = rng.random()
+    if r < 0.60:
+        return _new_device(rng)
+    elif r < 0.90:
+        return compte.device_id_habituel
+    else:
+        return "DEV-SEC-" + "".join(rng.choices(string.hexdigits[:16], k=6)).upper()
+
+
+def _antenne_fraude(rng: random.Random, compte: Compte) -> str:
+    """Antenne relais pour une fraude furtive (mixte)."""
+    if rng.random() < 0.55:
+        return _antenne_etrangere(rng, compte.region)
+    return _antenne_region(rng, compte.region)
+
+
 def _montant_normal(rng: random.Random, compte: Compte) -> float:
     """Tire un montant dans les habitudes de l'abonné."""
     m = abs(np.random.default_rng(rng.randint(0, 2**31)).normal(
         compte.montant_moyen_habituel, compte.ecart_type_montant
     ))
-    return max(500.0, min(m, compte.solde))
+    return max(500.0, min(m, compte.solde if compte.solde > 500 else compte.montant_moyen_habituel))
 
 
 def _montant_fraude(rng: random.Random, compte: Compte) -> float:
-    """
-    Montant frauduleux avec variabilité :
-    - 70% des fraudes : gros montant (3.0x à 12.0x)
-    - 30% des fraudes : montant discret (1.2x à 2.5x) pour simuler des attaques furtives
-    """
-    if rng.random() < 0.30:
-        facteur = rng.uniform(1.2, 2.5)
-    else:
-        facteur = rng.uniform(FACTEUR_MONTANT_FRAUDE_MIN, FACTEUR_MONTANT_FRAUDE_MAX)
-    return min(compte.montant_moyen_habituel * facteur, compte.solde)
+    """Montant frauduleux (facteur elevé ou moyen)."""
+    facteur = rng.uniform(2.5, FACTEUR_MONTANT_FRAUDE_MAX)
+    montant_cible = compte.montant_moyen_habituel * facteur
+    return max(1000.0, min(montant_cible, compte.solde if compte.solde > 1000 else compte.montant_moyen_habituel * 2))
 
 
 def _beneficiaire_fraude(rng: random.Random, compte: Compte) -> str:
-    """
-    Bénéficiaire pour une fraude :
-    - 70% : nouveau bénéficiaire (inconnu)
-    - 30% : bénéficiaire connu (complice ou contact déjà vu) pour casser la fuite de données
-    """
-    if rng.random() < 0.30 and compte.beneficiaires_habituels:
+    """Bénéficiaire pour une fraude (50% connu, 50% nouveau)."""
+    if rng.random() < 0.50 and compte.beneficiaires_habituels:
         return rng.choice(compte.beneficiaires_habituels)
     return "BEN-" + uuid.uuid4().hex[:8].upper()
 
 
 def _beneficiaire_legitime(rng: random.Random, compte: Compte) -> str:
-    """
-    Bénéficiaire pour une transaction légitime :
-    - 65% : bénéficiaire habituel connu
-    - 35% : nouveau bénéficiaire (nouveau marchand, ticket, contact) pour simuler la vraie vie
-    """
-    if rng.random() < 0.35 or not compte.beneficiaires_habituels:
+    """Bénéficiaire pour une transaction légitime (60% connu, 40% nouveau)."""
+    if rng.random() < 0.40 or not compte.beneficiaires_habituels:
         return "BEN-" + uuid.uuid4().hex[:8].upper()
     return rng.choice(compte.beneficiaires_habituels)
-
-
-def _beneficiaire(rng: random.Random, compte: Compte, connu: bool = True) -> str:
-    if connu and compte.beneficiaires_habituels:
-        return rng.choice(compte.beneficiaires_habituels)
-    return "BEN-" + uuid.uuid4().hex[:8].upper()
 
 
 # ── Constructeurs d'événements ───────────────────────────────
@@ -237,19 +238,20 @@ def _ev_otp(
     }
 
 
-# ── Scénarios frauduleux ─────────────────────────────────────
+# ── Scénarios frauduleux (Périmètre SIM Swap) ────────────────
 
 def build_sim_swap_simple(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
+    """Attaque SIM Swap classique : nouveau device, antenne étrangère, délai OTP court."""
     sid = _new_id("SCN")
     nouveau_iccid  = _new_iccid(rng)
     nouveau_imsi   = _new_imsi(rng)
     nouveau_device = _new_device(rng)
     antenne_att    = _antenne_etrangere(rng, compte.region)
-    delai_otp      = rng.uniform(DELAI_OTP_SWAP_FRAUDE_MIN, DELAI_OTP_SWAP_FRAUDE_MAX)
+    delai_otp      = rng.uniform(DELAI_OTP_SWAP_FRAUDE_MIN, 15.0)
 
     ts_otp  = ts
     ts_swap = ts_otp + timedelta(minutes=delai_otp)
-    ts_tx   = ts_swap + timedelta(minutes=rng.uniform(1, 8))
+    ts_tx   = ts_swap + timedelta(minutes=rng.uniform(1, 10))
 
     ev = [
         Evenement("otp-events",   compte.id_compte,
@@ -266,20 +268,20 @@ def build_sim_swap_simple(compte: Compte, rng: random.Random, ts: datetime) -> S
                                   nouveau_device, antenne_att, sid, True, rng,
                                   TypeScenario.SIM_SWAP_SIMPLE), ts_tx),
     ]
-    # Mettre à jour la SIM du compte
     compte.iccid_actuel = nouveau_iccid
     compte.imsi_actuel  = nouveau_imsi
     return Scenario(sid, TypeScenario.SIM_SWAP_SIMPLE, compte, ev, True)
 
 
 def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
+    """Attaque SIM Swap avec transferts successifs (vidage)."""
     sid = _new_id("SCN")
     nouveau_iccid  = _new_iccid(rng)
     nouveau_imsi   = _new_imsi(rng)
     nouveau_device = _new_device(rng)
     antenne_att    = _antenne_etrangere(rng, compte.region)
-    delai_otp      = rng.uniform(DELAI_OTP_SWAP_FRAUDE_MIN, DELAI_OTP_SWAP_FRAUDE_MAX)
-    nb_transferts  = rng.randint(3, 7)
+    delai_otp      = rng.uniform(DELAI_OTP_SWAP_FRAUDE_MIN, 20.0)
+    nb_transferts  = rng.randint(3, 6)
 
     ts_otp  = ts
     ts_swap = ts_otp + timedelta(minutes=delai_otp)
@@ -298,7 +300,7 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
     compte.iccid_actuel = nouveau_iccid
     compte.imsi_actuel  = nouveau_imsi
 
-    ts_courant = ts_swap + timedelta(minutes=rng.uniform(1, 5))
+    ts_courant = ts_swap + timedelta(minutes=rng.uniform(1, 10))
     nb_tx_crees = 0
     for _ in range(nb_transferts):
         if compte.solde < 100:
@@ -307,7 +309,7 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
             compte.solde * rng.uniform(0.20, 0.50),
             compte.solde
         ))
-        ts_courant += timedelta(seconds=rng.uniform(30, 120))
+        ts_courant += timedelta(minutes=rng.uniform(1, 20))
         ev.append(Evenement("transactions", compte.id_compte,
                             _ev_transaction(compte, ts_courant, montant,
                                             _beneficiaire_fraude(rng, compte),
@@ -318,7 +320,7 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
 
     if nb_tx_crees == 0 and compte.solde > 0:
         montant = max(100.0, compte.solde * 0.5)
-        ts_courant += timedelta(seconds=30)
+        ts_courant += timedelta(minutes=2)
         ev.append(Evenement("transactions", compte.id_compte,
                             _ev_transaction(compte, ts_courant, montant,
                                             _beneficiaire_fraude(rng, compte),
@@ -330,10 +332,14 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
 
 
 def build_pic_otp(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
+    """Rafale d'OTP (interception/harcèlement) suivie d'un SIM Swap et transfert."""
     sid = _new_id("SCN")
+    nouveau_iccid  = _new_iccid(rng)
+    nouveau_imsi   = _new_imsi(rng)
     nouveau_device = _new_device(rng)
     antenne_att    = _antenne_etrangere(rng, compte.region)
-    nb_otp         = rng.randint(5, 10)
+    delai_otp      = rng.uniform(1.0, 15.0)
+    nb_otp         = rng.randint(5, 9)
 
     ev = []
     ts_courant = ts
@@ -343,7 +349,14 @@ def build_pic_otp(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
                             _ev_otp(compte, ts_courant, antenne_att, sid,
                                     TypeScenario.PIC_OTP), ts_courant))
 
-    ts_tx = ts_courant + timedelta(minutes=rng.uniform(1, 5))
+    ts_swap = ts_courant + timedelta(minutes=delai_otp)
+    ev.append(Evenement("sim-events", compte.id_compte,
+                        _ev_sim(compte, ts_swap, nouveau_iccid, nouveau_imsi,
+                                nouveau_device, antenne_att, antenne_att,
+                                sid, True, rng, delai_otp,
+                                TypeScenario.PIC_OTP), ts_swap))
+
+    ts_tx = ts_swap + timedelta(minutes=rng.uniform(1, 10))
     montant = _montant_fraude(rng, compte)
     ev.append(Evenement("transactions", compte.id_compte,
                         _ev_transaction(compte, ts_tx, montant,
@@ -351,7 +364,49 @@ def build_pic_otp(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
                                         nouveau_device, antenne_att, sid, True, rng,
                                         TypeScenario.PIC_OTP), ts_tx))
 
+    compte.iccid_actuel = nouveau_iccid
+    compte.imsi_actuel  = nouveau_imsi
     return Scenario(sid, TypeScenario.PIC_OTP, compte, ev, True)
+
+
+def build_sim_swap_discret(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
+    """
+    Attaque SIM Swap furtive / modérée :
+    - Swap effectué de façon discrète (délai OTP 15-45 min)
+    - La transaction frauduleuse arrive 15 à 180 min après le swap
+    - Montant modéré, bénéficiaire et antenne mixtes (device habituel ou secondaire)
+    """
+    sid = _new_id("SCN")
+    nouveau_iccid  = _new_iccid(rng)
+    nouveau_imsi   = _new_imsi(rng)
+    device_att     = _device_fraude(rng, compte)
+    antenne_att    = _antenne_fraude(rng, compte)
+    delai_otp      = rng.uniform(15.0, 45.0)
+
+    ts_otp  = ts
+    ts_swap = ts_otp + timedelta(minutes=delai_otp)
+    ts_tx   = ts_swap + timedelta(minutes=rng.uniform(15, 180))
+
+    montant = min(compte.montant_moyen_habituel * rng.uniform(0.8, 1.8), compte.solde if compte.solde > 500 else compte.montant_moyen_habituel)
+
+    ev = [
+        Evenement("otp-events", compte.id_compte,
+                  _ev_otp(compte, ts_otp, antenne_att, sid,
+                          TypeScenario.SIM_SWAP_DISCRET), ts_otp),
+        Evenement("sim-events", compte.id_compte,
+                  _ev_sim(compte, ts_swap, nouveau_iccid, nouveau_imsi,
+                          device_att, antenne_att, antenne_att,
+                          sid, True, rng, delai_otp,
+                          TypeScenario.SIM_SWAP_DISCRET), ts_swap),
+        Evenement("transactions", compte.id_compte,
+                  _ev_transaction(compte, ts_tx, montant,
+                                  _beneficiaire_fraude(rng, compte),
+                                  device_att, antenne_att, sid, True, rng,
+                                  TypeScenario.SIM_SWAP_DISCRET), ts_tx),
+    ]
+    compte.iccid_actuel = nouveau_iccid
+    compte.imsi_actuel  = nouveau_imsi
+    return Scenario(sid, TypeScenario.SIM_SWAP_DISCRET, compte, ev, True)
 
 
 # ── Scénarios légitimes (faux positifs) ──────────────────────
@@ -360,7 +415,8 @@ def build_swap_legitime(compte: Compte, rng: random.Random, ts: datetime) -> Sce
     sid = _new_id("SCN")
     nouveau_iccid  = _new_iccid(rng)
     nouveau_imsi   = _new_imsi(rng)
-    nouveau_device = compte.device_id_habituel  # même appareil
+    # 50% du temps, un swap SIM légitime s'accompagne d'un nouveau téléphone
+    nouveau_device = _new_device(rng) if rng.random() < 0.50 else compte.device_id_habituel
     antenne        = _antenne_region(rng, compte.region)
     delai_otp      = rng.uniform(DELAI_OTP_SWAP_LEGITIME_MIN, DELAI_OTP_SWAP_LEGITIME_MAX)
 
@@ -379,6 +435,8 @@ def build_swap_legitime(compte: Compte, rng: random.Random, ts: datetime) -> Sce
     ]
     compte.iccid_actuel = nouveau_iccid
     compte.imsi_actuel  = nouveau_imsi
+    if nouveau_device != compte.device_id_habituel:
+        compte.device_id_habituel = nouveau_device
     return Scenario(sid, TypeScenario.SWAP_LEGITIME, compte, ev, False)
 
 
@@ -401,8 +459,8 @@ def build_gros_montant_legitime(compte: Compte, rng: random.Random, ts: datetime
     sid     = _new_id("SCN")
     antenne = _antenne_region(rng, compte.region)
     montant = min(
-        compte.montant_moyen_habituel * rng.uniform(2.0, 4.0),
-        compte.solde
+        compte.montant_moyen_habituel * rng.uniform(2.5, 6.0),
+        compte.solde if compte.solde > 1000 else compte.montant_moyen_habituel * 3
     )
     ev = [Evenement("transactions", compte.id_compte,
                     _ev_transaction(compte, ts, montant,
@@ -426,11 +484,13 @@ def build_voyage_legitime(compte: Compte, rng: random.Random, ts: datetime) -> S
 
 
 def build_transaction_normale(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
+    # Transaction de routine standard (antenne locale et device habituel)
     antenne = _antenne_region(rng, compte.region)
+    device  = compte.device_id_habituel
     montant = _montant_normal(rng, compte)
     ev = [Evenement("transactions", compte.id_compte,
                     _ev_transaction(compte, ts, montant,
                                     _beneficiaire_legitime(rng, compte),
-                                    compte.device_id_habituel, antenne, None, False, rng,
+                                    device, antenne, None, False, rng,
                                     TypeScenario.NORMAL), ts)]
     return Scenario("", TypeScenario.NORMAL, compte, ev, False)
