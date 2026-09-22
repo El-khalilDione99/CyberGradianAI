@@ -109,15 +109,18 @@ def compute_features(
     zscore_montant = (montant - ref_mean) / ref_std
 
     # ── 3. hours_since_sim_swap ───────────────────────────────
-    # float("inf") si aucun swap enregistré → aucune règle "swap récent" ne déclenche.
+    # 9999.0 si aucun swap enregistré (sentinelle compatible JSON & dataset ML)
+    SENTINEL_NO_SWAP = 9999.0
     if ts_dernier_swap:
         try:
             ts_swap = _parse_ts(ts_dernier_swap)
             hours_since_sim_swap = (ts_event - ts_swap).total_seconds() / 3600.0
+            if hours_since_sim_swap < 0:
+                hours_since_sim_swap = SENTINEL_NO_SWAP
         except (ValueError, TypeError):
-            hours_since_sim_swap = float("inf")
+            hours_since_sim_swap = SENTINEL_NO_SWAP
     else:
-        hours_since_sim_swap = float("inf")
+        hours_since_sim_swap = SENTINEL_NO_SWAP
 
     # ── 4. new_device ─────────────────────────────────────────
     new_device = bool(device_id and device_id not in devices_connus)
@@ -129,12 +132,18 @@ def compute_features(
     )
 
     # ── 6. is_roaming ─────────────────────────────────────────
-    # Vrai si l'antenne courante n'est pas l'antenne domicile ET est inconnue.
-    # Priorité à la comparaison antenne_domicile (plus fiable).
-    if antenne_domicile:
-        is_roaming = bool(antenne and antenne != antenne_domicile)
-    else:
+    # Vrai si l'antenne courante n'a jamais été vue pour cet abonné.
+    # Priorité à `antennes_connues` (grossit avec l'activité normale : un
+    # abonné qui transacte depuis plusieurs antennes de sa région les
+    # apprend toutes). Comparer strictement à `antenne_domicile` marque à
+    # tort ~70% du trafic normal comme « itinérant » dès que l'abonné utilise
+    # une antenne différente de son antenne d'inscription (cf. finding #3) —
+    # repli sur `antenne_domicile` seulement si le profil n'a encore aucune
+    # antenne connue.
+    if antennes_connues:
         is_roaming = bool(antenne and antenne not in antennes_connues)
+    else:
+        is_roaming = bool(antenne and antenne_domicile and antenne != antenne_domicile)
 
     # ── 7. otp_count_1h ───────────────────────────────────────
     # Directement depuis le profil — mis à jour par apply_otp_event (IA-3).

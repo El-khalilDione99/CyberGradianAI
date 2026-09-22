@@ -30,6 +30,7 @@ from simulator.scenarios import (
     build_sim_swap_cascade, build_pic_otp,
     build_gros_montant_legitime, build_voyage_legitime,
 )
+from simulator.config import ANTENNES_PAR_REGION
 from interfaces.store import ObjectStore
 from engine.rules.engine        import RuleEngine
 from engine.anomaly.dataset     import build_dataset as build_if_ds
@@ -88,7 +89,7 @@ def pipeline():
             "ecart_type_montant":     c.ecart_type_montant,
             "devices_connus":         [c.device_id_habituel],
             "beneficiaires_connus":   list(c.beneficiaires_habituels),
-            "antennes_connues":       [c.antenne_domicile],
+            "antennes_connues":       list(ANTENNES_PAR_REGION[c.region]),  # compte établi : toutes les antennes de sa région lui sont familières
             "antenne_domicile":       c.antenne_domicile,
             "ts_dernier_swap":        None,
             "nb_otp_1h": 0, "nb_tx_1h": 1, "nb_tx_24h": 3, "nb_tx_7j": 15,
@@ -140,7 +141,7 @@ def fraude_event():
         "ecart_type_montant":     c.ecart_type_montant,
         "devices_connus":         [c.device_id_habituel],
         "beneficiaires_connus":   [],
-        "antennes_connues":       [c.antenne_domicile],
+        "antennes_connues":       list(ANTENNES_PAR_REGION[c.region]),
         "antenne_domicile":       c.antenne_domicile,
         "ts_dernier_swap":        ts.isoformat(),
         "nb_otp_1h": 6, "nb_tx_1h": 3, "nb_tx_24h": 5, "nb_tx_7j": 20,
@@ -163,7 +164,7 @@ def normal_event():
         "ecart_type_montant":     c.ecart_type_montant,
         "devices_connus":         [c.device_id_habituel],
         "beneficiaires_connus":   list(c.beneficiaires_habituels),
-        "antennes_connues":       [c.antenne_domicile],
+        "antennes_connues":       list(ANTENNES_PAR_REGION[c.region]),
         "antenne_domicile":       c.antenne_domicile,
         "ts_dernier_swap":        None,
         "nb_otp_1h": 0, "nb_tx_1h": 1, "nb_tx_24h": 2, "nb_tx_7j": 12,

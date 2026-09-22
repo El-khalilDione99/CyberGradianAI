@@ -49,12 +49,29 @@ def _purge_window(ts_list: list[str], cutoff: datetime) -> list[str]:
     """
     Supprime de la liste tous les timestamps antérieurs à cutoff.
     Retourne la liste nettoyée.
+
+    Optimisation : comparaison lexicale de chaînes ISO 8601. Toutes les
+    valeurs stockées passent par `datetime.isoformat()` avec le même fuseau
+    (`+00:00`), donc l'ordre lexical == l'ordre chronologique. On évite ainsi
+    de parser chaque timestamp en `datetime` à chaque événement (~50x plus
+    rapide sur les fenêtres longues — cf. rejeu du dataset complet).
     """
-    return [ts for ts in ts_list if _parse_ts(ts) >= cutoff]
+    cutoff_iso = cutoff.isoformat()
+    return [ts for ts in ts_list if ts >= cutoff_iso]
+
+
+def _purge_tx_window(tx_list: list[dict[str, Any]], cutoff: datetime) -> list[dict[str, Any]]:
+    """
+    Supprime de la liste les transactions (dict avec clé 'ts') antérieures à cutoff.
+    Même optimisation lexicale que `_purge_window`.
+    """
+    cutoff_iso = cutoff.isoformat()
+    return [tx for tx in tx_list if tx["ts"] >= cutoff_iso]
 
 
 def _count_in_window(ts_list: list[str], cutoff: datetime) -> int:
-    return sum(1 for ts in ts_list if _parse_ts(ts) >= cutoff)
+    cutoff_iso = cutoff.isoformat()
+    return sum(1 for ts in ts_list if ts >= cutoff_iso)
 
 
 # ════════════════════════════════════════════════════════════
@@ -64,10 +81,19 @@ def _count_in_window(ts_list: list[str], cutoff: datetime) -> int:
 #  Mise à jour en O(1) sans stocker l'historique complet.
 #
 #  Variables maintenues dans le profil :
-#    nb_transactions     : n
+#    nb_transactions     : nombre de transactions RÉELLES observées
+#    montant_welford_n   : compte effectif de Welford (= nb_transactions +
+#                          pseudo-observations du prior d'amorçage)
 #    montant_moyen       : mean  (µ_n)
 #    montant_m2_welford  : M2    (somme des carrés des écarts)
 #    ecart_type_montant  : std   (√(M2 / n) si n > 1)
+#
+#  Amorçage : build_initial_profile fournit un prior (montant_moyen_habituel,
+#  ecart_type_montant) valant WELFORD_PRIOR_N pseudo-observations. Sans un
+#  compte effectif séparé, la 1ʳᵉ vraie transaction écraserait la moyenne
+#  (mean += delta/1) et ferait chuter l'écart-type à 0 → z-scores aberrants.
+#  `nb_transactions` reste le compte réel (utilisé par le garde-fou z-score
+#  de la Couche 2 : Z_MIN_TRANSACTIONS).
 # ════════════════════════════════════════════════════════════
 
 def _welford_update(profile: dict, montant: float) -> None:
@@ -75,7 +101,13 @@ def _welford_update(profile: dict, montant: float) -> None:
     Met à jour les statistiques Welford du profil avec un nouveau montant.
     Modifie le profil en place.
     """
-    n    = profile.get("nb_transactions", 0) + 1
+    # Compte effectif : le prior si présent, sinon le compte réel (rétrocompat
+    # avec les profils sans amorçage — départ propre à 0).
+    n_eff = profile.get("montant_welford_n")
+    if n_eff is None:
+        n_eff = profile.get("nb_transactions", 0)
+    n = n_eff + 1
+
     mean = profile.get("montant_moyen", 0.0)
     m2   = profile.get("montant_m2_welford", 0.0)
 
@@ -85,7 +117,8 @@ def _welford_update(profile: dict, montant: float) -> None:
     delta2 = montant - mean
     m2    += delta * delta2
 
-    profile["nb_transactions"]    = n
+    profile["nb_transactions"]    = profile.get("nb_transactions", 0) + 1
+    profile["montant_welford_n"]  = n
     profile["montant_moyen"]      = round(mean, 4)
     profile["montant_m2_welford"] = round(m2, 4)
     profile["ecart_type_montant"] = round(
@@ -104,10 +137,10 @@ def apply_transaction(profile: dict[str, Any], event: dict[str, Any]) -> dict[st
     Mises à jour effectuées :
       1. Statistiques Welford (montant moyen et écart-type)
       2. Fenêtres glissantes de vélocité (1h, 24h, 7j)
-      3. Montant total sur 24h
+      3. Montant total sur 24h (calcul exact par déduction des transactions expirées)
       4. Solde courant
       5. Set des devices connus
-      6. Set des bénéficiaires connus
+      6. Set des bénéficiaires connus (CPT- et BEN-)
       7. Set des antennes connues
       8. Timestamp de dernière mise à jour
     """
@@ -120,50 +153,48 @@ def apply_transaction(profile: dict[str, Any], event: dict[str, Any]) -> dict[st
     # ── 1. Welford ───────────────────────────────────────────
     _welford_update(profile, montant)
 
-    # ── 2 & 3. Fenêtres glissantes de vélocité ───────────────
+    # ── 2, 3 & 4. Fenêtres glissantes de vélocité (1h, 24h, 7j) ───
     cutoff_1h  = ts - WINDOW_1H
     cutoff_24h = ts - WINDOW_24H
     cutoff_7d  = ts - WINDOW_7D
 
     # Récupérer les listes existantes
-    fen_1h  = profile.get("fenetre_1h_ts",  [])
-    fen_24h = profile.get("fenetre_24h_ts", [])
+    fen_1h     = profile.get("fenetre_1h_ts",  [])
+    fen_24h_tx = profile.get("fenetre_24h_tx", [])
+    fen_7d     = profile.get("fenetre_7j_ts",   [])
 
-    # Purger les timestamps expirés
-    fen_1h  = _purge_window(fen_1h,  cutoff_1h)
-    fen_24h = _purge_window(fen_24h, cutoff_24h)
+    # Fallback de rétro-compatibilité si fenetre_24h_tx n'existe pas encore
+    if not fen_24h_tx and profile.get("fenetre_24h_ts"):
+        fen_24h_tx = [{"ts": t, "m": 0.0} for t in profile["fenetre_24h_ts"]]
 
-    # Ajouter le timestamp courant (garder une taille raisonnable)
+    # Purger les timestamps/transactions expirés
+    fen_1h     = _purge_window(fen_1h, cutoff_1h)
+    fen_24h_tx = _purge_tx_window(fen_24h_tx, cutoff_24h)
+    fen_7d     = _purge_window(fen_7d, cutoff_7d)
+
+    # Ajouter la nouvelle transaction
     ts_str = ts.isoformat()
     fen_1h.append(ts_str)
-    fen_24h.append(ts_str)
-    if len(fen_1h)  > MAX_TS_LIST: fen_1h  = fen_1h[-MAX_TS_LIST:]
-    if len(fen_24h) > MAX_TS_LIST: fen_24h = fen_24h[-MAX_TS_LIST:]
+    fen_24h_tx.append({"ts": ts_str, "m": montant})
+    fen_7d.append(ts_str)
+
+    if len(fen_1h) > MAX_TS_LIST: fen_1h = fen_1h[-MAX_TS_LIST:]
+    if len(fen_24h_tx) > MAX_TS_LIST: fen_24h_tx = fen_24h_tx[-MAX_TS_LIST:]
+    if len(fen_7d) > MAX_TS_LIST: fen_7d = fen_7d[-MAX_TS_LIST:]
+
+    fen_24h_ts = [item["ts"] for item in fen_24h_tx]
 
     profile["fenetre_1h_ts"]  = fen_1h
-    profile["fenetre_24h_ts"] = fen_24h
+    profile["fenetre_24h_tx"] = fen_24h_tx
+    profile["fenetre_24h_ts"] = fen_24h_ts
+    profile["fenetre_7j_ts"]  = fen_7d
+
     profile["nb_tx_1h"]       = len(fen_1h)
-    profile["nb_tx_24h"]      = len(fen_24h)
+    profile["nb_tx_24h"]      = len(fen_24h_tx)
+    profile["nb_tx_7j"]       = len(fen_7d)
 
-    # nb_tx_7j : on recalcule depuis fenetre_24h étendue si disponible,
-    # sinon on maintient un compteur incrémental simple
-    nb_7j = profile.get("nb_tx_7j", 0)
-    # Récupérer toutes les ts de 24h et recalculer 7j depuis fen_24h
-    # Pour les transactions > 24h, on maintient juste le compteur cumulatif
-    # (le simulateur publie en batch ; la fenêtre 7j est recalculée proprement
-    #  en streaming réel où les événements arrivent dans l'ordre)
-    profile["nb_tx_7j"] = nb_7j + 1
-
-    # ── 4. Montant total 24h ──────────────────────────────────
-    # Recalculer depuis les timestamps encore valides
-    # On ne peut pas recalculer sans les montants passés → on maintient un accumulateur
-    # et on reset si la fenêtre est vide (approximation raisonnable en streaming)
-    total_24h = profile.get("total_montant_24h", 0.0)
-    if profile["nb_tx_24h"] == 1:
-        # Première transaction dans la fenêtre 24h après purge
-        total_24h = montant
-    else:
-        total_24h += montant
+    # total_montant_24h : somme exacte des montants toujours dans la fenêtre 24h
+    total_24h = sum(float(item["m"]) for item in fen_24h_tx)
     profile["total_montant_24h"] = round(total_24h, 2)
 
     # ── 5. Solde ──────────────────────────────────────────────
@@ -179,7 +210,7 @@ def apply_transaction(profile: dict[str, Any], event: dict[str, Any]) -> dict[st
             profile["devices_connus"] = devices
 
     # ── 7. Bénéficiaires connus ───────────────────────────────
-    if benef and benef.startswith("CPT-"):  # on n'apprend que les vrais comptes
+    if benef and (benef.startswith("CPT-") or benef.startswith("BEN-")):  # on apprend les vrais comptes/bénéficiaires
         beneficiaires = profile.get("beneficiaires_connus", [])
         if benef not in beneficiaires:
             beneficiaires.append(benef)
@@ -209,14 +240,20 @@ def apply_sim_event(profile: dict[str, Any], event: dict[str, Any]) -> dict[str,
     Mises à jour effectuées :
       1. Mise à jour de l'ICCID et de l'IMSI actifs
       2. Enregistrement du timestamp du dernier swap (feature critique)
-      3. Incrémentation du compteur de swaps sur 30j
-      4. Ajout du nouveau device aux devices connus
+      3. Fenêtre glissante de 30 jours pour nb_swaps_30j
+
+    Le device utilisé PENDANT le swap n'est volontairement PAS ajouté à
+    `devices_connus` ici : la confiance dans un appareil se gagne par une
+    transaction réussie (cf. apply_transaction), pas par le swap lui-même.
+    Sinon, un swap frauduleux « blanchit » instantanément l'appareil de
+    l'attaquant et neutralise le signal `new_device` sur la transaction qui
+    suit — cf. dictionnaire_features.md, limite #2.
     """
-    ts           = _parse_ts(event["horodatage"])
-    nouveau_iccid = event.get("nouveau_iccid", "")
-    nouveau_imsi  = event.get("nouveau_imsi", "")
-    nouveau_device = event.get("device_id", "")
-    ts_str        = ts.isoformat()
+    ts            = _parse_ts(event["horodatage"])
+    nouveau_iccid  = event.get("nouveau_iccid", "")
+    nouveau_imsi   = event.get("nouveau_imsi", "")
+    ts_str         = ts.isoformat()
+    cutoff_30d     = ts - WINDOW_30D
 
     # ── 1. Mise à jour SIM ───────────────────────────────────
     if nouveau_iccid:
@@ -225,20 +262,17 @@ def apply_sim_event(profile: dict[str, Any], event: dict[str, Any]) -> dict[str,
         profile["imsi_actuel"] = nouveau_imsi
 
     # ── 2. Timestamp dernier swap ────────────────────────────
-    #    C'est la feature la plus critique : heures_depuis_swap
-    #    est calculée à la volée par le moteur de scoring.
     profile["ts_dernier_swap"] = ts_str
 
-    # ── 3. Compteur swaps 30j ────────────────────────────────
-    nb_swaps = profile.get("nb_swaps_30j", 0) + 1
-    profile["nb_swaps_30j"] = nb_swaps
+    # ── 3. Fenêtre glissante swaps 30j ───────────────────────
+    fen_swaps_30j = profile.get("fenetre_swaps_30j_ts", [])
+    fen_swaps_30j = _purge_window(fen_swaps_30j, cutoff_30d)
+    fen_swaps_30j.append(ts_str)
+    if len(fen_swaps_30j) > MAX_TS_LIST:
+        fen_swaps_30j = fen_swaps_30j[-MAX_TS_LIST:]
 
-    # ── 4. Nouveau device ────────────────────────────────────
-    if nouveau_device:
-        devices = profile.get("devices_connus", [])
-        if nouveau_device not in devices:
-            devices.append(nouveau_device)
-            profile["devices_connus"] = devices
+    profile["fenetre_swaps_30j_ts"] = fen_swaps_30j
+    profile["nb_swaps_30j"]         = len(fen_swaps_30j)
 
     # ── Méta ──────────────────────────────────────────────────
     profile["mis_a_jour_le"] = ts_str
@@ -255,8 +289,8 @@ def apply_otp_event(profile: dict[str, Any], event: dict[str, Any]) -> dict[str,
     Met à jour le profil à partir d'un événement du topic `otp-events`.
 
     Mises à jour effectuées :
-      1. Fenêtre glissante OTP 1h (otp_spike = nb_otp_1h >= 3)
-      2. Compteur OTP 24h
+      1. Fenêtre glissante OTP 1h
+      2. Fenêtre glissante OTP 24h
     """
     ts     = _parse_ts(event["horodatage"])
     ts_str = ts.isoformat()
@@ -274,9 +308,15 @@ def apply_otp_event(profile: dict[str, Any], event: dict[str, Any]) -> dict[str,
     profile["fenetre_otp_1h_ts"] = fen_otp_1h
     profile["nb_otp_1h"]         = len(fen_otp_1h)
 
-    # ── Compteur OTP 24h ─────────────────────────────────────
-    # Approche simple : incrémental (reset si >= 24h sans OTP)
-    profile["nb_otp_24h"] = profile.get("nb_otp_24h", 0) + 1
+    # ── Fenêtre OTP 24h ──────────────────────────────────────
+    fen_otp_24h = profile.get("fenetre_otp_24h_ts", [])
+    fen_otp_24h = _purge_window(fen_otp_24h, cutoff_24h)
+    fen_otp_24h.append(ts_str)
+    if len(fen_otp_24h) > MAX_TS_LIST:
+        fen_otp_24h = fen_otp_24h[-MAX_TS_LIST:]
+
+    profile["fenetre_otp_24h_ts"] = fen_otp_24h
+    profile["nb_otp_24h"]        = len(fen_otp_24h)
 
     # ── Méta ──────────────────────────────────────────────────
     profile["mis_a_jour_le"] = ts_str

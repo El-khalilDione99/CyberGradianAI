@@ -87,28 +87,44 @@ def run() -> None:
 
     while _running:
         messages_this_round = 0
+        batch_events: list[tuple[str, dict]] = []
 
+        # 1. Collecter les événements de tous les topics
         for topic, consumer in consumers.items():
             try:
                 events = consumer.consume(topic, batch_size=BATCH_SIZE)
+                for ev in events:
+                    batch_events.append((topic, ev))
             except Exception as exc:
                 logger.error("Erreur consommation [%s] : %s", topic, exc)
                 continue
 
-            if not events:
-                continue
+        if not batch_events:
+            time.sleep(POLL_INTERVAL)
+            continue
 
-            results = handler.handle_batch(topic, events)
-            messages_this_round += len(results)
-            total_messages      += len(results)
+        # 2. Option B : Trier tous les événements inter-topics par horodatage chronologique
+        def _extract_ts(item: tuple[str, dict]) -> str:
+            return item[1].get("horodatage", "")
 
-            # Log des erreurs individuelles
-            for r in results:
-                if not r.success:
-                    logger.warning(
-                        "Échec [%s] compte=%s : %s",
-                        r.topic, r.id_compte[:16] if r.id_compte else "?", r.error,
-                    )
+        batch_events.sort(key=_extract_ts)
+
+        # 3. Traitement séquentiel ordonné par horodatage
+        results = []
+        for topic, ev in batch_events:
+            r = handler.handle(topic, ev)
+            results.append(r)
+
+        messages_this_round = len(results)
+        total_messages      += len(results)
+
+        # Log des erreurs individuelles
+        for r in results:
+            if not r.success:
+                logger.warning(
+                    "Échec [%s] compte=%s : %s",
+                    r.topic, r.id_compte[:16] if r.id_compte else "?", r.error,
+                )
 
         # ── Log périodique ────────────────────────────────────
         if total_messages > 0 and total_messages % LOG_EVERY < messages_this_round:
