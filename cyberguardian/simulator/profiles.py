@@ -10,6 +10,13 @@ from datetime import datetime, timezone
 from simulator.subscribers import Compte
 from interfaces.store import get_feature_store
 
+# Poids du prior d'amorçage Welford, en nombre de pseudo-observations.
+# Le couple (montant_moyen_habituel, ecart_type_montant) issu du profil initial
+# est traité comme s'il résultait de WELFORD_PRIOR_N transactions passées :
+# assez pour stabiliser moyenne/écart-type dès la 1ʳᵉ vraie transaction, pas
+# assez pour dominer une fois le vrai historique accumulé.
+WELFORD_PRIOR_N = 20
+
 
 def build_initial_profile(compte: Compte) -> dict:
     """
@@ -42,9 +49,12 @@ def build_initial_profile(compte: Compte) -> dict:
         "beneficiaires_connus": compte.beneficiaires_habituels,
 
         # ── Statistiques Welford (moyenne/variance en ligne) ───
-        "nb_transactions":       0,
-        "montant_moyen":         compte.montant_moyen_habituel,   # amorçage
-        "montant_m2_welford":    compte.ecart_type_montant ** 2,  # amorçage variance
+        # Prior d'amorçage valant WELFORD_PRIOR_N pseudo-observations :
+        #   M2 = variance_prior × n   ⇒   √(M2/n) = ecart_type_prior
+        "nb_transactions":       0,                                        # compte RÉEL
+        "montant_welford_n":     WELFORD_PRIOR_N,                          # compte effectif
+        "montant_moyen":         compte.montant_moyen_habituel,
+        "montant_m2_welford":    (compte.ecart_type_montant ** 2) * WELFORD_PRIOR_N,
         "ecart_type_montant":    compte.ecart_type_montant,
 
         # ── Vélocité (fenêtres glissantes) ─────────────────────

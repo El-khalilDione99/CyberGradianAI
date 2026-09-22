@@ -25,7 +25,14 @@ def get_date_debut() -> datetime:
 # ── Taux de scénarios ────────────────────────────────────────
 # Proportion de comptes qui reçoivent chaque type de scénario
 TAUX_SCENARIO_FRAUDE                  = float(os.getenv("SIM_TAUX_FRAUDE",          "0.20"))   # 20%
-TAUX_SCENARIO_SWAP_LEGITIME           = float(os.getenv("SIM_TAUX_SWAP_LEGITIME",   "0.03"))   # 3%
+# Relevé de 3% à 10% (finding #4) : à 3%, trop peu d'abonnés produisaient une
+# transaction légitime peu après un swap pour contrebalancer les fraudes qui,
+# elles, suivent TOUJOURS un swap récent — le modèle apprenait "swap récent
+# = fraude" à ~100%. Un premier essai à 6% (~22 transactions post-swap au
+# total, 4 seulement dans le test) suffisait déjà à faire chuter la
+# dépendance à `hours_since_sim_swap` (AUC-PR sans cette feature : 0.63→0.98)
+# mais restait un échantillon fin ; 10% donne une population plus solide.
+TAUX_SCENARIO_SWAP_LEGITIME           = float(os.getenv("SIM_TAUX_SWAP_LEGITIME",   "0.10"))   # 10%
 TAUX_SCENARIO_NOUVEAU_DEVICE_LEGITIME = float(os.getenv("SIM_TAUX_DEVICE_LEGITIME", "0.05"))   # 5%
 TAUX_SCENARIO_GROS_MONTANT_LEGITIME   = float(os.getenv("SIM_TAUX_GROS_MONTANT",    "0.02"))   # 2%
 TAUX_TRANSACTION_VOYAGE_LEGITIME      = float(os.getenv("SIM_TAUX_VOYAGE",          "0.04"))   # 4%
@@ -58,6 +65,17 @@ REGIONS = [
     "dakar", "thies", "saint_louis", "kaolack", "ziguinchor",
     "tambacounda", "diourbel", "louga", "fatick", "kolda",
     "kedougou", "sedhiou", "kaffrine", "matam",
+]
+
+# Poids de population approximatifs (ordre de grandeur indicatif, pas des
+# chiffres officiels) : sans ça, un tirage uniforme sur les 14 régions
+# sous-représentait fortement Dakar, qui concentre la plus grosse part de la
+# population sénégalaise réelle (finding #6). Utilisé uniquement pour tirer
+# la région d'un abonné — n'importe pas sur la logique de détection.
+POIDS_REGIONS = [
+    24,  10,  6,   6,   5,
+    6,   8,   5,   5,   5,
+    2,   4,   5,   4,
 ]
 
 # Antennes par région (3 à 6 antennes par région)

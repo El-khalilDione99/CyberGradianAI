@@ -26,7 +26,7 @@ import numpy as np
 
 from simulator.config import (
     SEED, NB_ABONNES, PREFIXES_ORANGE, SEGMENTS,
-    ANTENNES_PAR_REGION, REGIONS, HEURES_ACTIVES,
+    ANTENNES_PAR_REGION, REGIONS, POIDS_REGIONS, HEURES_ACTIVES,
     get_date_debut, DUREE_SIMULATION_JOURS,
 )
 
@@ -118,8 +118,8 @@ def generate_subscribers(n: int = NB_ABONNES, seed: int = SEED) -> list[Compte]:
         numero = "".join([str(rng.randint(0, 9)) for _ in range(7)])
         id_compte = _hacher_msisdn(f"221{prefix}{numero}")
 
-        # Géographie
-        region = rng.choice(REGIONS)
+        # Géographie (pondérée — cf. POIDS_REGIONS, finding #6)
+        region = rng.choices(REGIONS, weights=POIDS_REGIONS, k=1)[0]
         antenne_domicile = rng.choice(ANTENNES_PAR_REGION[region])
 
         # Segment de revenus

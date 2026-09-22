@@ -36,6 +36,22 @@ from simulator.config import (
 )
 
 
+def _sample_weighted(rng: random.Random, comptes: list[Compte], n: int, poids: list[float]) -> list[Compte]:
+    """
+    Échantillonnage SANS remise, pondéré (méthode des clés d'Efraimidis-Spirakis) :
+    chaque compte reçoit une clé `U ** (1/poids)` avec U ~ Uniforme(0,1), on
+    garde les n plus grandes clés. Un poids plus élevé augmente la probabilité
+    d'être choisi sans jamais la garantir — pas de simple `sorted()`.
+
+    Utilisé pour cibler la fraude vers les comptes à plus fort montant habituel
+    (cf. finding #5 : un tirage uniforme ne reflète pas le comportement d'un
+    fraudeur, qui privilégie les portefeuilles rentables).
+    """
+    cles = [(rng.random() ** (1.0 / max(poids[i], 1e-9)), i) for i in range(len(comptes))]
+    cles.sort(key=lambda x: x[0], reverse=True)
+    return [comptes[i] for _, i in cles[:n]]
+
+
 def _heure_aleatoire(rng: random.Random, compte: Compte) -> int:
     """Tire une heure dans les heures actives de l'abonné."""
     return rng.choice(compte.heures_actives) if compte.heures_actives else rng.randint(7, 21)
@@ -71,7 +87,11 @@ def planifier_simulation(
     nb_new_device  = max(1, int(len(comptes) * TAUX_SCENARIO_NOUVEAU_DEVICE_LEGITIME))
     nb_gros_mt     = max(1, int(len(comptes) * TAUX_SCENARIO_GROS_MONTANT_LEGITIME))
 
-    comptes_fraude     = set(c.id_compte for c in rng.sample(comptes, nb_fraude))
+    # Ciblage pondéré : un compte au montant habituel élevé a plus de chances
+    # d'être attaqué (racine carrée pour amortir — sinon la fraude se
+    # concentrerait sur la poignée de plus gros comptes, cf. finding #5).
+    poids_cible    = [compte.montant_moyen_habituel ** 0.5 for compte in comptes]
+    comptes_fraude = set(c.id_compte for c in _sample_weighted(rng, comptes, nb_fraude, poids_cible))
     comptes_swap_leg   = set(c.id_compte for c in rng.sample(comptes, nb_swap_leg))
     comptes_new_device = set(c.id_compte for c in rng.sample(comptes, nb_new_device))
     comptes_gros_mt    = set(c.id_compte for c in rng.sample(comptes, nb_gros_mt))

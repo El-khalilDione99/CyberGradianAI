@@ -125,10 +125,19 @@ def _montant_normal(rng: random.Random, compte: Compte) -> float:
 
 
 def _montant_fraude(rng: random.Random, compte: Compte) -> float:
-    """Montant frauduleux (facteur elevé ou moyen)."""
-    facteur = rng.uniform(2.5, FACTEUR_MONTANT_FRAUDE_MAX)
+    """
+    Montant frauduleux : cible un facteur élevé (2.5-10x l'habitude), mais ne
+    doit jamais retomber sous 1.5x l'habitude quand le solde le permet — sinon
+    le plafond (solde disponible) écrasait systématiquement le facteur et
+    diluait `amount_ratio` en dessous de 1 (cf. finding #1 : la fraude n'avait
+    pas l'air plus grosse que le trafic normal). Si le solde est trop faible
+    pour tenir ce plancher, on vide ce qui reste (signal de vidage).
+    """
+    facteur       = rng.uniform(2.5, FACTEUR_MONTANT_FRAUDE_MAX)
     montant_cible = compte.montant_moyen_habituel * facteur
-    return max(1000.0, min(montant_cible, compte.solde if compte.solde > 1000 else compte.montant_moyen_habituel * 2))
+    plafond       = compte.solde if compte.solde > 1000 else compte.montant_moyen_habituel * 2
+    plancher      = min(compte.montant_moyen_habituel * 1.5, plafond)
+    return max(plancher, min(montant_cible, plafond))
 
 
 def _beneficiaire_fraude(rng: random.Random, compte: Compte) -> str:
@@ -305,10 +314,14 @@ def build_sim_swap_cascade(compte: Compte, rng: random.Random, ts: datetime) -> 
     for _ in range(nb_transferts):
         if compte.solde < 100:
             break
-        montant = max(100.0, min(
-            compte.solde * rng.uniform(0.20, 0.50),
-            compte.solde
-        ))
+        # Chaque transfert vise le plus élevé de : une part du solde restant,
+        # ou un multiple de l'habitude de l'abonné — sinon un compte au solde
+        # modeste (mais aux petites habitudes) produisait des cascades dont le
+        # montant unitaire était proche, voire inférieur, à une transaction
+        # normale (cf. finding #1).
+        cible_solde    = compte.solde * rng.uniform(0.20, 0.50)
+        cible_habitude = compte.montant_moyen_habituel * rng.uniform(1.5, 3.0)
+        montant = max(100.0, min(max(cible_solde, cible_habitude), compte.solde))
         ts_courant += timedelta(minutes=rng.uniform(1, 20))
         ev.append(Evenement("transactions", compte.id_compte,
                             _ev_transaction(compte, ts_courant, montant,
@@ -387,7 +400,13 @@ def build_sim_swap_discret(compte: Compte, rng: random.Random, ts: datetime) -> 
     ts_swap = ts_otp + timedelta(minutes=delai_otp)
     ts_tx   = ts_swap + timedelta(minutes=rng.uniform(15, 180))
 
-    montant = min(compte.montant_moyen_habituel * rng.uniform(0.8, 1.8), compte.solde if compte.solde > 500 else compte.montant_moyen_habituel)
+    # "Modéré" mais toujours au-dessus de l'habitude (1.2-2.2x) : à 0.8x le
+    # montant pouvait être *inférieur* à une transaction normale, ce qui
+    # neutralisait tout signal de montant même pour ce scénario (finding #1).
+    montant = min(
+        compte.montant_moyen_habituel * rng.uniform(1.2, 2.2),
+        compte.solde if compte.solde > 500 else compte.montant_moyen_habituel * 1.5,
+    )
 
     ev = [
         Evenement("otp-events", compte.id_compte,
@@ -412,6 +431,17 @@ def build_sim_swap_discret(compte: Compte, rng: random.Random, ts: datetime) -> 
 # ── Scénarios légitimes (faux positifs) ──────────────────────
 
 def build_swap_legitime(compte: Compte, rng: random.Random, ts: datetime) -> Scenario:
+    """
+    Swap SIM légitime (perte, casse, nouvelle carte en agence).
+
+    Contrairement aux versions précédentes, ce scénario produit AUSSI une
+    transaction normale peu après le swap : un abonné qui vient de changer
+    de SIM/téléphone continue à s'en servir dans les heures qui suivent.
+    Sans ce cas, aucune transaction légitime de tout le dataset n'a un
+    `hours_since_sim_swap` bas — la Couche 3 apprend alors que « swap
+    récent » prédit la fraude à ~100 %, ce qui ne serait plus vrai en
+    production (cf. finding #4).
+    """
     sid = _new_id("SCN")
     nouveau_iccid  = _new_iccid(rng)
     nouveau_imsi   = _new_imsi(rng)
@@ -422,6 +452,8 @@ def build_swap_legitime(compte: Compte, rng: random.Random, ts: datetime) -> Sce
 
     ts_otp  = ts
     ts_swap = ts_otp + timedelta(minutes=delai_otp)
+    ts_tx   = ts_swap + timedelta(minutes=rng.uniform(10, 240))
+    montant = _montant_normal(rng, compte)
 
     ev = [
         Evenement("otp-events", compte.id_compte,
@@ -432,6 +464,11 @@ def build_swap_legitime(compte: Compte, rng: random.Random, ts: datetime) -> Sce
                           nouveau_device, antenne, antenne,
                           sid, False, rng, delai_otp,
                           TypeScenario.SWAP_LEGITIME), ts_swap),
+        Evenement("transactions", compte.id_compte,
+                  _ev_transaction(compte, ts_tx, montant,
+                                  _beneficiaire_legitime(rng, compte),
+                                  nouveau_device, antenne, sid, False, rng,
+                                  TypeScenario.SWAP_LEGITIME), ts_tx),
     ]
     compte.iccid_actuel = nouveau_iccid
     compte.imsi_actuel  = nouveau_imsi
