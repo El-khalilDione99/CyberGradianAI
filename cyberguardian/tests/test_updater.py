@@ -160,7 +160,7 @@ class TestFeatureUpdater(unittest.TestCase):
     # ── 4. Gestion des événements SIM Swap ───────────────────
 
     def test_04_apply_sim_event(self):
-        """Vérifie la mise à jour de la SIM (ICCID, IMSI, horodatage, compteur swaps, device)."""
+        """Vérifie la mise à jour de la SIM (ICCID, IMSI, horodatage, compteur swaps, device du swap)."""
         sim_event = {
             "id_evenement": "SIM-001",
             "id_compte": "CPT-TEST12345",
@@ -176,7 +176,10 @@ class TestFeatureUpdater(unittest.TestCase):
         self.assertEqual(updated["imsi_actuel"], "608999999999999")
         self.assertEqual(updated["ts_dernier_swap"], self.now.isoformat())
         self.assertEqual(updated["nb_swaps_30j"], 1)
-        self.assertIn("DEV-SWAP-AGENCE", updated["devices_connus"])
+        # L'appareil du swap est mémorisé mais pas encore « connu » : il le
+        # deviendra à sa première transaction (new_device vrai sur celle-ci).
+        self.assertEqual(updated["device_dernier_swap"], "DEV-SWAP-AGENCE")
+        self.assertNotIn("DEV-SWAP-AGENCE", updated["devices_connus"])
 
     # ── 5. Gestion des demandes OTP et fenêtres glissantes ───
 

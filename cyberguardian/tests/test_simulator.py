@@ -154,7 +154,8 @@ def check_sim_event(ev: dict, est_fraude: bool):
     assert ev["label_fraude"] == (1 if est_fraude else 0)
     if est_fraude:
         assert ev["canal_swap"] in CANAUX_SWAP_FRAUDE
-        assert 0 < ev["delai_otp_swap_minutes"] <= 10
+        from simulator.config import DELAI_OTP_SWAP_FRAUDE_MAX
+        assert 0 < ev["delai_otp_swap_minutes"] <= DELAI_OTP_SWAP_FRAUDE_MAX
     else:
         assert ev["canal_swap"] in CANAUX_SWAP_LEGITIME
 

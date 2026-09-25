@@ -88,21 +88,15 @@ def simulated_data():
         }
         for _ in range(8):
             sc = build_transaction_normale(c, rng, ts)
-            events += [e.payload for e in sc.evenements if e.stream == "transactions"]
+            events += [{**e.payload, "stream": e.stream} for e in sc.evenements]
             ts += timedelta(hours=3)
         builders = [build_sim_swap_simple, build_sim_swap_cascade, build_pic_otp,
                     build_gros_montant_legitime, build_voyage_legitime,
                     build_transaction_normale]
         sc = builders[i % 6](c, rng, ts)
-        for ev in sc.evenements:
-            if ev.stream == "sim-events":
-                profiles[c.id_compte]["ts_dernier_swap"] = ev.payload["horodatage"]
-                profiles[c.id_compte]["nb_swaps_30j"] += 1
-            elif ev.stream == "otp-events":
-                profiles[c.id_compte]["nb_otp_1h"] += 1
-                profiles[c.id_compte]["nb_otp_24h"] += 1
-            elif ev.stream == "transactions":
-                events.append(ev.payload)
+        # Les 3 flux sont rejoués : le swap SIM et les OTP arrivent dans le
+        # profil au moment où ils se produisent, comme en production.
+        events += [{**e.payload, "stream": e.stream} for e in sc.evenements]
 
     return events, profiles
 
@@ -334,3 +328,55 @@ class TestEvaluate:
         dataset, _, detector, store = trained_bundle
         evaluate(detector, dataset, store=store, save_report=True)
         assert any("xgboost/eval" in k for k in store._data)
+
+
+# ════════════════════════════════════════════════════════════
+#  Tests de conformité IA-6
+# ════════════════════════════════════════════════════════════
+
+class TestConformiteIA6:
+
+    def test_parquet_label_en_premiere_colonne(self, simulated_data):
+        import io
+        import numpy as np
+        import pandas as pd
+        from engine.supervised.dataset import export_dataset_parquet, read_parquet
+        events, profiles = simulated_data
+        store = InMemoryStore()
+        ds = build_dataset(events=events, profiles_override=profiles)
+        exp = export_dataset_parquet(ds, store, version="t")
+        df = pd.read_parquet(io.BytesIO(store.download("cg-datasets", exp["train_key"])))
+        assert df.columns[0] == "label"
+        X, y = read_parquet(store, exp["train_key"])
+        assert np.allclose(X, ds.X_train) and (y == ds.y_train).all()
+        assert len(exp["train_sha256"]) == 64
+
+    def test_challenger_plus_faible_rejete_et_enregistre(self, simulated_data):
+        from interfaces.registry import ModelRegistry
+        events, profiles = simulated_data
+        store, reg = InMemoryStore(), ModelRegistry("sqlite://")
+        ds = build_dataset(events=events, profiles_override=profiles)
+        champion = train(ds, store=store, registry=reg)
+        faible = train(ds, store=store, registry=reg,
+                       params_override={"n_estimators": 1, "max_depth": 1})
+        assert champion.is_champion and not faible.is_champion
+        assert store.load_json("cg-models", "xgboost/production/current.json")["version"] == champion.version
+        rows = reg.list_models("xgboost")
+        assert [r["promoted"] for r in rows] == [True, False]
+        assert all(r["dataset_key"] and r["dataset_sha256"] and r["metrics_json"] for r in rows)
+
+    def test_requete_sagemaker_sans_endpoint(self):
+        from engine.supervised.train import build_training_job_request
+        req = build_training_job_request("job-test", "datasets/xgboost/v/train.parquet", 40.0)
+        assert req["ResourceConfig"]["InstanceType"] == "ml.m5.large"
+        assert req["InputDataConfig"][0]["ContentType"] == "application/x-parquet"
+        assert req["HyperParameters"]["scale_pos_weight"] == "40.0"
+        assert "num_round" in req["HyperParameters"]
+        assert "Endpoint" not in str(req)
+
+    def test_label_analyste_remplace_label_simulateur(self, simulated_data):
+        events, profiles = simulated_data
+        tx = next(e for e in events if e.get("stream") == "transactions" and e.get("label_fraude") == 0)
+        ds = build_dataset(events=events, profiles_override=profiles,
+                           labels_override={tx["id_transaction"]: 1})
+        assert ds.meta["n_labels_analyste"] == 1

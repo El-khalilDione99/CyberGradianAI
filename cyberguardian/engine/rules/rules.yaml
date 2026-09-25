@@ -1,65 +1,70 @@
 # ==============================================================================
 # CyberGuardian AI — Moteur de règles (Couche 1) — IA-4
-# Version: 1.0 (baseline complète — 10/10 règles finalisées)
+# Version: 2.0 (recalibrage sur le simulateur corrigé — 12 règles)
 #
-# Statut global:
-#   - R01, R02, R03, R09 : seuils directement appuyés par les mesures de l'EDA v3.
-#   - R04, R05, R06, R07, R08, R10 : baseline défendable faute de mesure EDA
-#     directe sur ces signaux précis. A recalibrer via le harnais d'évaluation
-#     IA-8 (precision fraude, rappel @1% FPR, AUC-PR) dès que du volume de
-#     scoring réel est disponible — c'est précisément le rôle d'IA-8.
+# Recalibrage v2.0 (mesuré sur 1 500 abonnés simulés, 80 473 transactions,
+# 700 fraudes, toutes transactions confondues) :
+#   Sur un simulateur réaliste (légitimes inhabituels, fraudes proches de
+#   l'habitude), les signaux ISOLÉS (itinérance, vitesse, OTP, montant) ne
+#   distinguent plus la fraude : précision 4 à 19 %. Combinés à un swap SIM
+#   récent, ils redeviennent précis (76 à 83 %). Les règles sont donc
+#   recentrées sur ces combinaisons ; les signaux isolés sont conservés avec un
+#   score bas (information ou vérification OTP, sans alerte fraude).
+#   Précision / rappel mesurés par règle indiqués dans chaque `status`.
 #
-# Portée IA-4: uniquement le contenu des règles ci-dessous.
-#   Le dépôt physique dans S3 et le rechargement à chaud (/reload-model)
-#   relèvent d'IA-7 / IA-9, pas d'IA-4.
+# Rappel des zones de décision : < 30 PASS · 30-69 CHALLENGE (OTP) · ≥ 70 BLOCK.
+# Seuil d'alerte fraude utilisé pour les mesures : score ≥ 50.
+#
+# Limite connue : VOL_TELEPHONE (vol de téléphone déverrouillé, sans swap)
+# n'est détecté par aucune règle — même appareil, même lieu, pas de swap.
+# Limite acceptée pour IA-7.
 # ==============================================================================
+
+version: "2.0"
 
 rules:
 
   - id: R01
-    name: "SIM swap récent + transaction importante"
+    name: "SIM swap récent + montant supérieur à l'habitude"
     description: >
-      Un swap SIM vient d'avoir lieu et il est immédiatement suivi d'une
-      transaction dont le montant dépasse largement l'habitude de l'abonné.
-      L'EDA v3 montre que le délai OTP->swap des fraudes est de 1 à 8 minutes
-      (contre 5-90 minutes pour les swaps légitimes) : l'attaquant agit vite
-      après avoir pris le contrôle de la ligne.
+      Transaction moins d'une heure après un swap SIM, pour un montant
+      supérieur à 1,5 fois l'habitude. v1 exigeait ×3 : précision 95 % mais
+      seulement 3 % des fraudes (les fraudes sont souvent proches de l'habitude).
     signals:
       - feature: hours_since_sim_swap
         operator: "<"
         threshold: 1
       - feature: amount_ratio
         operator: ">"
-        threshold: 3
+        threshold: 1.5
     logic: AND
     score: 92
     severity: "Très élevée"
-    status: "seuils appuyés par l'EDA"
+    status: "v2.0 — précision 82 %, rappel 9 %"
 
   - id: R02
-    name: "Nouveau device + transaction importante"
+    name: "Nouveau device + montant supérieur à l'habitude"
     description: >
-      Une transaction significative est effectuée depuis un terminal jamais
-      vu pour ce compte. Signal cohérent avec une prise de contrôle du
-      compte depuis un nouvel appareil.
+      Transaction depuis un appareil jamais vu, pour un montant supérieur à
+      1,5 fois l'habitude. Précision insuffisante pour bloquer : vérification.
     signals:
       - feature: new_device
         operator: "=="
         threshold: true
       - feature: amount_ratio
         operator: ">"
-        threshold: 3
+        threshold: 1.5
     logic: AND
-    score: 78
-    severity: "Élevée"
-    status: "seuils appuyés par l'EDA"
+    score: 60
+    severity: "Moyenne"
+    status: "v2.0 — précision 41 %, rappel 4 % (v1 : ×3, 78 pts)"
 
   - id: R03
     name: "Nouveau device après SIM swap"
     description: >
-      Un nouveau device apparaît peu de temps après un swap SIM. Cumul de
-      deux signaux individuellement déjà significatifs — indicateur fort
-      de prise de contrôle complète de la ligne.
+      Un appareil jamais vu apparaît moins de 2 h après un swap SIM. Les
+      swaps légitimes avec changement de téléphone produisent le même signal :
+      vérification plutôt que blocage.
     signals:
       - feature: new_device
         operator: "=="
@@ -68,82 +73,83 @@ rules:
         operator: "<"
         threshold: 2
     logic: AND
-    score: 93
-    severity: "Très élevée"
-    status: "seuils appuyés par l'EDA"
+    score: 65
+    severity: "Élevée"
+    status: "v2.0 — précision 52 %, rappel 15 % (v1 : 93 pts)"
 
   - id: R04
-    name: "Pic inhabituel d'OTP"
+    name: "Pic d'OTP après SIM swap"
     description: >
-      Un nombre anormalement élevé de demandes OTP est observé sur une
-      courte période, typique d'une tentative de contournement ou de
-      multiples essais d'authentification par l'attaquant. Un abonné
-      légitime ne demande quasiment jamais plus d'un OTP par heure ; on
-      fixe donc le seuil à 3 pour laisser une marge aux erreurs de saisie
-      normales tout en captant le comportement en rafale des attaquants.
+      Au moins 3 OTP dans l'heure, moins de 6 h après un swap SIM. Seul, un pic
+      d'OTP est fréquent chez les légitimes (codes mal saisis, reconnexions) :
+      précision 19 %.
     signals:
       - feature: otp_count_1h
         operator: ">="
         threshold: 3
-    logic: SINGLE
-    score: 72
-    severity: "Élevée"
-    status: "Baseline v1.0 — à recalibrer via IA-8"
+      - feature: hours_since_sim_swap
+        operator: "<"
+        threshold: 6
+    logic: AND
+    score: 85
+    severity: "Très élevée"
+    status: "v2.0 — précision 82 %, rappel 17 % (v1 seul : 19 %)"
 
   - id: R05
-    name: "Vélocité excessive"
+    name: "Vélocité après SIM swap"
     description: >
-      Un nombre de transactions anormalement élevé est effectué sur une
-      courte fenêtre de temps, signe possible d'un vidage rapide du compte.
-      La majorité des abonnés effectuent au plus 1 à 2 transactions par
-      heure en usage normal (mobile money) ; 4 transactions en 1h sort
-      nettement de ce cadre.
+      Au moins 3 transactions dans l'heure, moins de 6 h après un swap SIM
+      (vidage en cours). Seule, la vélocité touche les gros consommateurs
+      légitimes : précision 5 %.
     signals:
       - feature: nb_tx_1h
         operator: ">="
-        threshold: 4
-    logic: SINGLE
-    score: 70
-    severity: "Élevée"
-    status: "Baseline v1.0 — à recalibrer via IA-8"
+        threshold: 3
+      - feature: hours_since_sim_swap
+        operator: "<"
+        threshold: 6
+    logic: AND
+    score: 85
+    severity: "Très élevée"
+    status: "v2.0 — précision 83 %, rappel 15 % (v1 seul ≥ 4 : 5 %)"
 
   - id: R06
     name: "Montant très supérieur à l'habitude"
     description: >
-      Le montant de la transaction dépasse fortement l'habitude de
-      l'abonné, même en l'absence d'autre signal contextuel (device, swap,
-      géo). Seuil volontairement plus strict que R01/R02/R09 puisque le
-      signal est isolé.
+      Montant supérieur à 5 fois l'habitude, sans autre signal. Les achats
+      importants légitimes sont fréquents : signal faible, vérification.
     signals:
       - feature: amount_ratio
         operator: ">"
         threshold: 5
     logic: SINGLE
-    score: 68
-    severity: "Élevée"
-    status: "Baseline v1.0 — à recalibrer via IA-8"
+    score: 40
+    severity: "Faible"
+    status: "v2.0 — précision 11 %, rappel 2 % (v1 : 68 pts)"
 
   - id: R07
-    name: "Changement géographique important"
+    name: "Changement de région après SIM swap"
     description: >
-      La transaction est effectuée depuis une antenne différente de
-      l'antenne domicile de l'abonné. La comparaison directe à l'antenne
-      domicile est disponible dès maintenant sans dépendance nouvelle.
+      Transaction depuis une autre région que le domicile, moins de 6 h après
+      un swap SIM. Combinaison la plus efficace de la couche.
     signals:
       - feature: is_roaming
         operator: "=="
         threshold: true
-    logic: SINGLE
-    score: 60
-    severity: "Moyenne/élevée"
-    status: "Baseline v1.0 — à recalibrer via IA-8"
+      - feature: hours_since_sim_swap
+        operator: "<"
+        threshold: 6
+    logic: AND
+    score: 80
+    severity: "Très élevée"
+    status: "v2.0 — précision 76 %, rappel 48 %, FPR 0,1 %"
 
   - id: R08
     name: "Cascade de transferts"
     description: >
-      Plusieurs bénéficiaires différents reçoivent des transferts en peu de
-      temps depuis le même compte — signature typique d'un vidage organisé
-      en cascade après prise de contrôle.
+      Plusieurs bénéficiaires en peu de temps. nb_beneficiaires_1h n'est
+      qu'une approximation (≈ nb_tx_1h) : précision 4 %. Score bas en attendant
+      un vrai décompte des bénéficiaires distincts.
     signals:
       - feature: nb_beneficiaires_1h
         operator: ">="
@@ -152,16 +158,15 @@ rules:
         operator: ">="
         threshold: 3
     logic: AND
-    score: 90
-    severity: "Très élevée"
-    status: "Baseline v1.0 — à recalibrer via IA-8"
+    score: 40
+    severity: "Faible"
+    status: "v2.0 — précision 4 % (approximation), v1 : 90 pts"
 
   - id: R09
     name: "Nouveau bénéficiaire + montant élevé"
     description: >
-      Un transfert important est envoyé à un bénéficiaire jamais utilisé
-      auparavant par ce compte. Cohérent avec un virement de fonds volés
-      vers un compte contrôlé par l'attaquant.
+      Transfert de plus de 3 fois l'habitude vers un bénéficiaire jamais
+      utilisé. Fréquent chez les légitimes dans le simulateur actuel : signal faible.
     signals:
       - feature: new_beneficiary
         operator: "=="
@@ -170,16 +175,15 @@ rules:
         operator: ">"
         threshold: 3
     logic: AND
-    score: 78
-    severity: "Élevée"
-    status: "seuils appuyés par l'EDA"
+    score: 40
+    severity: "Faible"
+    status: "v2.0 — précision 7 %, rappel 3 % (v1 : 78 pts)"
 
   - id: R10
     name: "Accumulation de plusieurs signaux faibles"
     description: >
-      Aucun signal individuel n'est critique, mais plusieurs indicateurs
-      faibles se déclenchent simultanément. Filet de sécurité pour capter
-      les fraudes qui ne correspondent à aucun scénario type ci-dessus.
+      Au moins 3 signaux faibles simultanés. Précision 42 % : vérification
+      plutôt que blocage.
     weak_signals:
       - feature: amount_ratio
         operator: ">"
@@ -195,9 +199,38 @@ rules:
         threshold: true
     logic: WEAK_SIGNALS
     weak_signals_min: 3
-    score: 88
-    severity: "Très élevée"
-    status: "Baseline v1.0 — à recalibrer via IA-8"
+    score: 65
+    severity: "Élevée"
+    status: "v2.0 — précision 42 %, rappel 14 % (v1 : 88 pts)"
+
+  - id: R11
+    name: "SIM swap très récent"
+    description: >
+      Transaction moins d'une heure après un swap SIM, quel que soit le
+      montant. Les clients légitimes utilisent aussi leur ligne juste après un
+      swap : vérification OTP, pas de blocage.
+    signals:
+      - feature: hours_since_sim_swap
+        operator: "<"
+        threshold: 1
+    logic: SINGLE
+    score: 60
+    severity: "Moyenne"
+    status: "v2.0 (nouvelle) — précision 63 %, rappel 49 %"
+
+  - id: R12
+    name: "Changement de région"
+    description: >
+      Transaction depuis une autre région que le domicile, sans swap récent.
+      Un voyage est légitime : information seulement (score sous PASS).
+    signals:
+      - feature: is_roaming
+        operator: "=="
+        threshold: true
+    logic: SINGLE
+    score: 25
+    severity: "Information"
+    status: "v2.0 (nouvelle, ex-R07 v1.1) — précision 10 %, FPR 3,7 %"
 
 # ==============================================================================
 # Dépendances bloquantes (rappel):

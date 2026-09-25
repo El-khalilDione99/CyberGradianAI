@@ -18,9 +18,11 @@ Features calculées :
   amount_ratio          : ratio montant courant / montant moyen habituel
   new_device            : appareil inconnu du profil
   new_beneficiary       : bénéficiaire inconnu du profil
-  is_roaming            : antenne hors domicile
-  otp_count_1h          : nb d'OTP dans la dernière heure (depuis profil)
-  nb_tx_1h              : nb de transactions dans la dernière heure
+  is_roaming            : antenne dans une autre région que le domicile
+  otp_count_1h          : nb d'OTP dans l'heure précédant la transaction
+  nb_tx_1h              : nb de transactions dans l'heure précédant la transaction
+  (compteurs de fenêtre recalculés à l'heure de la transaction à partir des
+   horodatages du profil, et non relus depuis le compteur stocké)
   nb_beneficiaires_1h   : nb de bénéficiaires distincts dans la dernière heure
   zscore_montant        : z-score du montant par rapport à l'historique Welford
   is_active_hour        : heure dans les heures habituelles d'activité
@@ -29,7 +31,7 @@ Features calculées :
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -88,10 +90,21 @@ def compute_features(
     antennes_connues       = profile.get("antennes_connues", [])
     antenne_domicile       = profile.get("antenne_domicile", "")
     ts_dernier_swap        = profile.get("ts_dernier_swap")
-    nb_otp_1h              = int(profile.get("nb_otp_1h", 0))
-    nb_tx_1h               = int(profile.get("nb_tx_1h", 0))
     heures_actives         = profile.get("heures_actives", [])
-    fenetre_1h_ts          = profile.get("fenetre_1h_ts", [])
+
+    # ── Compteurs de fenêtres glissantes, recalculés À L'HEURE DE LA TRANSACTION ──
+    # Les compteurs stockés (nb_tx_1h, nb_otp_1h…) datent de la dernière mise à
+    # jour du profil : relus tels quels, ils sont périmés (ex. un pic d'OTP vieux
+    # de 10 jours restait compté « dans l'heure »). On recompte donc les
+    # horodatages du profil sur [ts - fenêtre, ts[ ; la transaction courante est
+    # exclue. Repli sur le compteur stocké si le profil n'a pas la liste.
+    fenetre_1h_ts = _dans_fenetre(profile.get("fenetre_1h_ts"), ts_event, 1)
+    nb_tx_1h      = _compter(profile, "fenetre_1h_ts",        "nb_tx_1h",     ts_event, 1)
+    nb_tx_24h     = _compter(profile, "fenetre_24h_ts",       "nb_tx_24h",    ts_event, 24)
+    nb_tx_7j      = _compter(profile, "fenetre_7j_ts",        "nb_tx_7j",     ts_event, 24 * 7)
+    nb_otp_1h     = _compter(profile, "fenetre_otp_1h_ts",    "nb_otp_1h",    ts_event, 1)
+    nb_otp_24h    = _compter(profile, "fenetre_otp_24h_ts",   "nb_otp_24h",   ts_event, 24)
+    nb_swaps_30j  = _compter(profile, "fenetre_swaps_30j_ts", "nb_swaps_30j", ts_event, 24 * 30)
 
     # ── 1. amount_ratio ───────────────────────────────────────
     # Utilise montant_moyen_habituel (référence stable du simulateur) en
@@ -109,15 +122,32 @@ def compute_features(
     zscore_montant = (montant - ref_mean) / ref_std
 
     # ── 3. hours_since_sim_swap ───────────────────────────────
-    # float("inf") si aucun swap enregistré → aucune règle "swap récent" ne déclenche.
+    # Plafonné à 90 jours (2160h) si aucun swap récent — évite les inf qui
+    # cassent l'entraînement du modèle (RobustScaler, IsolationForest).
+    HOURS_SINCE_SWAP_CAP = 2160.0  # 90 jours
+
     if ts_dernier_swap:
         try:
             ts_swap = _parse_ts(ts_dernier_swap)
             hours_since_sim_swap = (ts_event - ts_swap).total_seconds() / 3600.0
+            hours_since_sim_swap = min(hours_since_sim_swap, HOURS_SINCE_SWAP_CAP)
         except (ValueError, TypeError):
-            hours_since_sim_swap = float("inf")
+            hours_since_sim_swap = HOURS_SINCE_SWAP_CAP
     else:
-        hours_since_sim_swap = float("inf")
+        hours_since_sim_swap = HOURS_SINCE_SWAP_CAP
+
+    # Gating : nb_tx_depuis_swap / montant_cumule_depuis_swap ne sont
+    # pertinents que si le swap est récent (sinon un compte normal actif
+    # ressemble artificiellement à une cascade en cours).
+    CASCADE_WINDOW_HOURS = 6.0
+    nb_tx_depuis_swap_raw          = int(profile.get("nb_tx_depuis_swap", 0))
+    montant_cumule_depuis_swap_raw = float(profile.get("montant_cumule_depuis_swap", 0.0))
+    if hours_since_sim_swap <= CASCADE_WINDOW_HOURS:
+        nb_tx_depuis_swap = nb_tx_depuis_swap_raw
+        montant_cumule_depuis_swap = montant_cumule_depuis_swap_raw
+    else:
+        nb_tx_depuis_swap = 0
+        montant_cumule_depuis_swap = 0.0
 
     # ── 4. new_device ─────────────────────────────────────────
     new_device = bool(device_id and device_id not in devices_connus)
@@ -129,22 +159,23 @@ def compute_features(
     )
 
     # ── 6. is_roaming ─────────────────────────────────────────
-    # Vrai si l'antenne courante n'est pas l'antenne domicile ET est inconnue.
-    # Priorité à la comparaison antenne_domicile (plus fiable).
-    if antenne_domicile:
-        is_roaming = bool(antenne and antenne != antenne_domicile)
-    else:
+    # Changement de RÉGION par rapport au domicile. Un abonné utilise
+    # normalement plusieurs antennes de sa région : comparer l'antenne exacte
+    # à l'antenne domicile marquait ~72 % des transactions légitimes comme
+    # « itinérance ». Si la région ne peut pas être déduite de l'identifiant,
+    # repli sur « antenne jamais vue » (antennes_connues).
+    region_courante = _region_antenne(antenne)
+    region_domicile = _region_antenne(antenne_domicile)
+    if antenne and region_courante and region_domicile:
+        is_roaming = region_courante != region_domicile
+    elif antennes_connues:
         is_roaming = bool(antenne and antenne not in antennes_connues)
+    else:
+        is_roaming = bool(antenne and antenne_domicile and antenne != antenne_domicile)
 
-    # ── 7. otp_count_1h ───────────────────────────────────────
-    # Directement depuis le profil — mis à jour par apply_otp_event (IA-3).
+    # ── 7. otp_count_1h / 8. nb_tx_1h ─────────────────────────
+    # Recalculés plus haut à l'heure de la transaction (fenêtre [ts - 1 h, ts[).
     otp_count_1h = nb_otp_1h
-
-    # ── 8. nb_tx_1h ───────────────────────────────────────────
-    # Directement depuis le profil — fenêtre glissante maintenue par IA-3.
-    # Note : nb_tx_1h dans le profil inclut déjà la transaction courante
-    # si le feature-updater a tourné avant le scoring. Sinon, +1 ici.
-    # On fait confiance au profil Redis pour ne pas doubler.
 
     # ── 9. nb_beneficiaires_1h ────────────────────────────────
     # Nombre de bénéficiaires DISTINCTS dans la dernière heure.
@@ -179,12 +210,55 @@ def compute_features(
         "montant_courant":       montant,
         "montant_moyen":         ref_mean,
         "ecart_type_montant":    ecart_type,
-        "nb_swaps_30j":          int(profile.get("nb_swaps_30j", 0)),
+        "nb_swaps_30j":          nb_swaps_30j,
         "solde":                 float(profile.get("solde", 0.0)),
-        "nb_otp_24h":            int(profile.get("nb_otp_24h", 0)),
-        "nb_tx_24h":             int(profile.get("nb_tx_24h", 0)),
-        "nb_tx_7j":              int(profile.get("nb_tx_7j", 0)),
+        "nb_otp_24h":            nb_otp_24h,
+        "nb_tx_24h":             nb_tx_24h,
+        "nb_tx_7j":              nb_tx_7j,
+        "nb_tx_depuis_swap":          nb_tx_depuis_swap,
+        "montant_cumule_depuis_swap": montant_cumule_depuis_swap,
     }
+
+
+# ════════════════════════════════════════════════════════════
+#  Fenêtres glissantes à l'heure de la transaction
+# ════════════════════════════════════════════════════════════
+
+def _dans_fenetre(ts_list: list[str] | None, ts_event: datetime, heures: float) -> list[str]:
+    """Horodatages de ts_list compris dans [ts_event - heures, ts_event[."""
+    debut = ts_event - timedelta(hours=heures)
+    out = []
+    for t in ts_list or []:
+        try:
+            if debut <= _parse_ts(t) < ts_event:
+                out.append(t)
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def compter_dans_fenetre(ts_list: list[str] | None, ts_event: datetime, heures: float) -> int:
+    """Nombre d'horodatages dans [ts_event - heures, ts_event[."""
+    return len(_dans_fenetre(ts_list, ts_event, heures))
+
+
+def _compter(profile: dict[str, Any], cle_liste: str, cle_compteur: str,
+             ts_event: datetime, heures: float) -> int:
+    """Recompte la fenêtre si le profil a la liste d'horodatages, sinon repli sur le compteur."""
+    if cle_liste in profile:
+        return compter_dans_fenetre(profile.get(cle_liste), ts_event, heures)
+    return int(profile.get(cle_compteur, 0))
+
+
+def _region_antenne(antenne: str | None) -> str | None:
+    """
+    Région d'une antenne, déduite de son identifiant « <REG>-ANT-<n> »
+    (ex. « DAK-ANT-003 » → « DAK »). None si le format n'est pas reconnu.
+    En production, remplacer par la table de référence des cellules de l'opérateur.
+    """
+    if antenne and "-ANT-" in antenne:
+        return antenne.split("-ANT-", 1)[0]
+    return None
 
 
 # ════════════════════════════════════════════════════════════

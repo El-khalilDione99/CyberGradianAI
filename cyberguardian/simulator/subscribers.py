@@ -76,6 +76,8 @@ class Compte:
     date_creation_compte:  date          # date d'ouverture du compte
     heures_actives:        list[int]     = field(default_factory=list)
     beneficiaires_habituels: list[str]   = field(default_factory=list)  # id_compte des bénéficiaires
+    niveau_activite:       float         = 1.0   # multiplicateur du nb de transactions/jour (profil)
+    device_secondaire:     str | None    = None  # 2e appareil éventuel (tablette, téléphone pro)
 
     def to_dict(self) -> dict:
         return {

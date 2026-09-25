@@ -146,12 +146,18 @@ services:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin123
+      - RULES_SOURCE=s3                 # règles lues dans MinIO (fichier local = repli)
       - RULES_PATH=/app/engine/rules/rules.yaml
       - RULES_BUCKET=cg-models
       - RULES_S3_KEY=rules/rules.yaml
       - SCORE_THRESHOLD_LOW=30
       - SCORE_THRESHOLD_MED=70
       - SCORE_THRESHOLD_HIGH=90
+      - SCORE_WEIGHT_IF=0.1
+      - SCORE_WEIGHT_XGB=0.9
+      - METRICS_BACKEND=local           # cloudwatch sur AWS
+      - SCORING_UPDATE_PROFILE=false    # le profil est tenu à jour par le feature-updater
+      - RELOAD_API_KEY=${RELOAD_API_KEY:-change-me-local}
     ports:
       - "8000:8000"
     depends_on:
@@ -159,9 +165,9 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     restart: on-failure
-    volumes:
-      - ./engine/rules:/app/engine/rules:ro
 
   # ── Simulateur (démarrable à la demande) ────────────────
   simulator:
