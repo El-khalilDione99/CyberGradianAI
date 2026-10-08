@@ -153,8 +153,9 @@ services:
       - SCORE_THRESHOLD_LOW=30
       - SCORE_THRESHOLD_MED=70
       - SCORE_THRESHOLD_HIGH=90
-      - SCORE_WEIGHT_IF=0.1
-      - SCORE_WEIGHT_XGB=0.9
+      - FUSION_WEIGHT_RULES=0.05
+      - FUSION_WEIGHT_ANOMALY=0.40
+      - FUSION_WEIGHT_SUPERVISED=0.55
       - METRICS_BACKEND=local           # cloudwatch sur AWS
       - SCORING_UPDATE_PROFILE=false    # le profil est tenu à jour par le feature-updater
       - RELOAD_API_KEY=${RELOAD_API_KEY:-change-me-local}
