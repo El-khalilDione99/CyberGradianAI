@@ -28,3 +28,12 @@ credentials.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Registre local des modèles (SQLite de repli si POSTGRES_DSN absent)
+cg_registry.db
+
+# Rapports générés par scripts/verifier_service_ia7.py (résultats locaux)
+rapports_verification/
+
+# Anciennes versions des notebooks (déjà présentes dans l historique Git)
+notebooks/archive/

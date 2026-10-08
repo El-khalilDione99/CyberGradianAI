@@ -74,12 +74,10 @@ class TestRuleEngine(unittest.TestCase):
     # ── 1. Chargement du moteur ──────────────────────────────
 
     def test_01_rules_loaded(self):
-        """Vérifie que les 10 règles sont bien chargées depuis rules.yaml."""
-        self.assertEqual(self.engine.rules_count, 10, "Le moteur doit charger exactement 10 règles")
+        """Vérifie que les 12 règles (v2.0) sont bien chargées depuis rules.yaml."""
+        self.assertEqual(self.engine.rules_count, 12, "Le moteur doit charger exactement 12 règles")
         status = self.engine.status()
-        self.assertEqual(len(status["rules_ids"]), 10)
-        expected_ids = [f"R{i:02d}" for i in range(1, 11)]
-        self.assertEqual(status["rules_ids"], expected_ids)
+        self.assertEqual(status["rules_ids"], [f"R{i:02d}" for i in range(1, 13)])
 
     # ── 2. Evaluation de transaction normale ─────────────────
 
@@ -90,126 +88,125 @@ class TestRuleEngine(unittest.TestCase):
         self.assertFalse(res.triggered)
         self.assertEqual(len(res.matches), 0)
 
-    # ── 3. R01 : SIM Swap récent + montant important ─────────
+    def _swap_il_y_a(self, minutes: float) -> dict:
+        profile = dict(self.base_profile)
+        profile["ts_dernier_swap"] = (self.now - timedelta(minutes=minutes)).isoformat()
+        return profile
+
+    def _ids(self, res):
+        return [m.rule_id for m in res.matches]
+
+    # ── 3. R01 : SIM Swap récent + montant > ×1,5 ────────────
 
     def test_03_rule_r01_sim_swap_recent_amount_ratio(self):
-        """R01 : swap < 1h ET amount_ratio > 3 -> Score 92."""
-        profile = dict(self.base_profile)
-        profile["ts_dernier_swap"] = (self.now - timedelta(minutes=20)).isoformat()
-
-        event = dict(self.base_event)
-        event["montant"] = 40000.0  # 4x le montant moyen (10 000)
-
-        res = self.engine.evaluate(event, profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R01", match_ids)
+        """R01 : swap < 1h ET amount_ratio > 1,5 -> Score 92 (BLOCK)."""
+        event = dict(self.base_event, montant=20000.0)  # 2x le montant moyen (10 000)
+        res = self.engine.evaluate(event, self._swap_il_y_a(20))
+        self.assertIn("R01", self._ids(res))
         self.assertGreaterEqual(res.score, 92)
 
-    # ── 4. R02 : Nouveau device + montant important ──────────
+    # ── 4. R02 : Nouveau device + montant > ×1,5 ─────────────
 
     def test_04_rule_r02_new_device_amount_ratio(self):
-        """R02 : nouveau device ET amount_ratio > 3 -> Score 78."""
-        event = dict(self.base_event)
-        event["device_id"] = "DEV-INCONNU-ATK"
-        event["montant"] = 35000.0  # 3.5x la moyenne
-
+        """R02 : nouveau device ET amount_ratio > 1,5 -> Score 60 (vérification)."""
+        event = dict(self.base_event, device_id="DEV-INCONNU-ATK", montant=20000.0)
         res = self.engine.evaluate(event, self.base_profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R02", match_ids)
-        self.assertGreaterEqual(res.score, 78)
+        self.assertIn("R02", self._ids(res))
+        self.assertEqual(res.score, 60)
 
     # ── 5. R03 : Nouveau device après SIM swap ───────────────
 
     def test_05_rule_r03_new_device_after_sim_swap(self):
-        """R03 : new_device ET hours_since_sim_swap < 2h -> Score 93."""
-        profile = dict(self.base_profile)
-        profile["ts_dernier_swap"] = (self.now - timedelta(minutes=30)).isoformat()
+        """R03 : new_device ET swap < 2h -> Score 65 (R11 aussi : swap < 1h)."""
+        event = dict(self.base_event, device_id="DEV-NOUVEAU-PIRATE")
+        res = self.engine.evaluate(event, self._swap_il_y_a(90))   # 1h30 : R03 sans R11
+        self.assertIn("R03", self._ids(res))
+        self.assertNotIn("R11", self._ids(res))
+        self.assertEqual(res.score, 65)
 
-        event = dict(self.base_event)
-        event["device_id"] = "DEV-NOUVEAU-PIRATE"
-
-        res = self.engine.evaluate(event, profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R03", match_ids)
-        self.assertGreaterEqual(res.score, 93)
-
-    # ── 6. R04 : Pic OTP ─────────────────────────────────────
+    # ── 6. R04 : Pic OTP après swap ──────────────────────────
 
     def test_06_rule_r04_otp_spike(self):
-        """R04 : otp_count_1h >= 3 -> Score 72."""
-        profile = dict(self.base_profile)
+        """R04 : otp_count_1h >= 3 ET swap < 6h -> Score 85 ; sans swap récent, rien."""
+        profile = self._swap_il_y_a(180)
         profile["nb_otp_1h"] = 4
-
         res = self.engine.evaluate(self.base_event, profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R04", match_ids)
-        self.assertGreaterEqual(res.score, 72)
+        self.assertIn("R04", self._ids(res))
+        self.assertGreaterEqual(res.score, 85)
+        sans_swap = dict(self.base_profile, nb_otp_1h=4)
+        self.assertNotIn("R04", self._ids(self.engine.evaluate(self.base_event, sans_swap)))
 
-    # ── 7. R05 : Vélocité excessive ──────────────────────────
+    # ── 7. R05 : Vélocité après swap ─────────────────────────
 
     def test_07_rule_r05_high_velocity(self):
-        """R05 : nb_tx_1h >= 4 -> Score 70."""
-        profile = dict(self.base_profile)
-        profile["nb_tx_1h"] = 5
-
+        """R05 : nb_tx_1h >= 3 ET swap < 6h -> Score 85 ; sans swap récent, rien."""
+        # nb_tx_1h est recalculé à l'heure de la transaction à partir des horodatages
+        fen = [(self.now - timedelta(minutes=m)).isoformat() for m in (5, 15, 25)]
+        profile = self._swap_il_y_a(180)
+        profile.update(fenetre_1h_ts=fen, nb_tx_1h=3)
         res = self.engine.evaluate(self.base_event, profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R05", match_ids)
-        self.assertGreaterEqual(res.score, 70)
+        self.assertIn("R05", self._ids(res))
+        self.assertGreaterEqual(res.score, 85)
+        sans_swap = dict(self.base_profile, fenetre_1h_ts=fen, nb_tx_1h=3)
+        self.assertNotIn("R05", self._ids(self.engine.evaluate(self.base_event, sans_swap)))
 
     # ── 8. R06 : Montant très supérieur à l'habitude ─────────
 
     def test_08_rule_r06_huge_amount_ratio(self):
-        """R06 : amount_ratio > 5 -> Score 68."""
-        event = dict(self.base_event)
-        event["montant"] = 60000.0  # 6x la moyenne habituelle
-
+        """R06 : amount_ratio > 5 -> Score 40 (signal faible)."""
+        event = dict(self.base_event, montant=60000.0)  # 6x la moyenne habituelle
         res = self.engine.evaluate(event, self.base_profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R06", match_ids)
-        self.assertGreaterEqual(res.score, 68)
+        self.assertIn("R06", self._ids(res))
+        self.assertEqual(res.score, 40)
 
-    # ── 9. R07 : Changement géographique ─────────────────────
+    # ── 9. R07 / R12 : Changement géographique ───────────────
 
     def test_09_rule_r07_roaming(self):
-        """R07 : antenne hors domicile -> Score 60."""
-        event = dict(self.base_event)
-        event["antenne"] = "THI-ANT-004"  # Hors de DAK-ANT-001
+        """R07 : autre région ET swap < 6h -> 80 ; R12 : autre région seule -> 25 (information)."""
+        event = dict(self.base_event, antenne="THI-ANT-004")  # région Thiès, domicile à Dakar
+        res = self.engine.evaluate(event, self._swap_il_y_a(180))
+        self.assertIn("R07", self._ids(res))
+        self.assertGreaterEqual(res.score, 80)
+        seul = self.engine.evaluate(event, self.base_profile)
+        self.assertEqual(self._ids(seul), ["R12"])
+        self.assertEqual(seul.score, 25)
 
+    def test_09b_meme_region_pas_itinerance(self):
+        """Une autre antenne de la même région n'est pas de l'itinérance."""
+        event = dict(self.base_event, antenne="DAK-ANT-005")  # jamais vue, mais à Dakar
         res = self.engine.evaluate(event, self.base_profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R07", match_ids)
-        self.assertGreaterEqual(res.score, 60)
+        self.assertFalse(res.features["is_roaming"])
+        self.assertNotIn("R07", self._ids(res))
+        self.assertNotIn("R12", self._ids(res))
 
     # ── 10. R09 : Nouveau bénéficiaire + montant élevé ───────
 
     def test_10_rule_r09_new_beneficiary_amount(self):
-        """R09 : new_beneficiary ET amount_ratio > 3 -> Score 78."""
-        event = dict(self.base_event)
-        event["id_beneficiaire"] = "BEN-COMPLICE-99"
-        event["montant"] = 35000.0
-
+        """R09 : new_beneficiary ET amount_ratio > 3 -> Score 40 (signal faible)."""
+        event = dict(self.base_event, id_beneficiaire="BEN-COMPLICE-99", montant=35000.0)
         res = self.engine.evaluate(event, self.base_profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R09", match_ids)
-        self.assertGreaterEqual(res.score, 78)
+        self.assertIn("R09", self._ids(res))
+        self.assertEqual(res.score, 40)
 
     # ── 11. R10 : Accumulation de signaux faibles ────────────
 
     def test_11_rule_r10_weak_signals_accumulation(self):
-        """R10 : 3+ signaux faibles simultanés -> Score 88."""
-        profile = dict(self.base_profile)
-        profile["nb_tx_1h"] = 2  # Signal faible 1
-
+        """R10 : 3+ signaux faibles simultanés -> Score 65."""
         event = dict(self.base_event)
-        event["montant"] = 25000.0               # Signal faible 2 : ratio > 2
-        event["antenne"] = "MAT-ANT-002"          # Signal faible 3 : is_roaming == True
-        event["id_beneficiaire"] = "BEN-INCONNU"  # Signal faible 4 : new_beneficiary == True
+        event["montant"] = 25000.0               # Signal faible : ratio > 2
+        event["antenne"] = "MAT-ANT-002"          # Signal faible : is_roaming == True
+        event["id_beneficiaire"] = "BEN-INCONNU"  # Signal faible : new_beneficiary == True
+        res = self.engine.evaluate(event, self.base_profile)
+        self.assertIn("R10", self._ids(res))
+        self.assertEqual(res.score, 65)
 
-        res = self.engine.evaluate(event, profile)
-        match_ids = [m.rule_id for m in res.matches]
-        self.assertIn("R10", match_ids)
-        self.assertGreaterEqual(res.score, 88)
+    # ── 11b. R11 : SIM swap très récent ──────────────────────
+
+    def test_11b_rule_r11_swap_tres_recent(self):
+        """R11 : swap < 1h quel que soit le montant -> Score 60 (vérification OTP)."""
+        res = self.engine.evaluate(self.base_event, self._swap_il_y_a(30))
+        self.assertEqual(self._ids(res), ["R11"])
+        self.assertEqual(res.score, 60)
 
     # ── 12. Robustesse sur profil vide / None ─────────────────
 
@@ -220,6 +217,17 @@ class TestRuleEngine(unittest.TestCase):
         self.assertIn("amount_ratio", res.features)
 
     # ── 13. Opérateurs atomiques ─────────────────────────────
+
+    def test_12b_fenetres_recalculees_a_l_heure_de_la_transaction(self):
+        """Un pic d'OTP vieux de 10 jours ne doit plus compter « dans l'heure »."""
+        profile = dict(self.base_profile)
+        vieux = [(self.now - timedelta(days=10, minutes=m)).isoformat() for m in range(6)]
+        profile.update(nb_otp_1h=6, fenetre_otp_1h_ts=vieux, nb_otp_24h=6, fenetre_otp_24h_ts=vieux,
+                       nb_tx_1h=3, fenetre_1h_ts=[(self.now - timedelta(hours=5)).isoformat()])
+        f = compute_features(self.base_event, profile)
+        self.assertEqual(f["otp_count_1h"], 0)
+        self.assertEqual(f["nb_otp_24h"], 0)
+        self.assertEqual(f["nb_tx_1h"], 0)
 
     def test_13_operator_evaluator(self):
         """Teste les comparaisons numériques, booléennes et formats texte."""

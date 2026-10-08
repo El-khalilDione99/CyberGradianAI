@@ -3,23 +3,36 @@ engine/anomaly/detector.py
 ───────────────────────────
 AnomalyDetector — Couche 2 du moteur de scoring (IA-5).
 
+Spécification IA-5 :
+  « Isolation Forest entraîné sur le trafic légitime simulé, plus z-scores par
+    abonné en garde-fou interprétable. Modèle sérialisé versionné dans S3
+    models/. »
+
 Responsabilités :
-  - Charger le bundle (IsolationForest + RobustScaler) depuis MinIO/S3
-  - Calculer les features dérivées via compute_features() (IA-4)
-  - Appliquer la formule hybride IF + z-score pour retourner un score 0-100
-  - Supporter le rechargement à chaud (reload_model) sans redémarrage
-  - Thread-safe (RLock, même pattern que RuleEngine)
+  - Charger le bundle (IsolationForest + RobustScaler + calibration) depuis
+    MinIO/S3 (bucket models, pointeur anomaly/production/current.json)
+  - Calculer les features via compute_features() (IA-4)
+  - Score Isolation Forest calibré 0-100
+  - Z-scores par abonné (montant, vitesse 24h, OTP 24h — voir zscores.py)
+    en garde-fou interprétable
+  - Rechargement à chaud (reload_model) et thread-safety (RLock)
 
-Formule de fusion (décidée en amont) :
-  score_if      = normaliser(score_isolation_forest → 0-100)
-  score_couche2 = score_if
-    si zscore_montant > Z_OVERRIDE_SOFT (3.0) → score = max(score_if, 75)
-    si zscore_montant > Z_OVERRIDE_HARD (5.0) → score = max(score_if, 90)
+Formule du score Couche 2 :
+  Mode normal (IF disponible) :
+    score = score_IF
+    si z_max >= Z_OVERRIDE_HARD (5σ) et Z_GUARD_ENABLED :
+        score = max(score_IF, Z_GUARD_FLOOR)     # plancher 50 → vérification
+    Les dimensions à z >= Z_OVERRIDE_SOFT (3σ) sont toujours listées dans
+    `raisons` (lisibles par un analyste), même sans effet sur le score.
 
-  Justification : l'IF est le modèle principal (vision multi-dimensionnelle).
-  Le z-score est un garde-fou interprétable sur le montant uniquement.
-  On n'utilise pas le max brut pour éviter qu'un z-score élevé sur un
-  compte peu actif (std Welford instable) ne déclenche à tort.
+  Mode dégradé (IF indisponible) :
+    score = filet_de_secours(z_max) : 0σ→0, 3σ→75, 5σ→90, 8σ→100
+
+  Compte sans historique (nb_transactions == 0) : score = 0.
+
+Le plancher du garde-fou (50) place la transaction en zone CHALLENGE
+(OTP supplémentaire) sans jamais la bloquer seul : le blocage reste une
+décision du modèle.
 """
 
 from __future__ import annotations
@@ -27,13 +40,15 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from engine.anomaly.dataset import FEATURE_NAMES
+from engine.anomaly.zscores import (
+    compute_zscores, Z_OVERRIDE_SOFT, Z_OVERRIDE_HARD, Z_MIN_TRANSACTIONS,
+)
 from engine.rules.features import compute_features
 from interfaces.store import get_object_store, BUCKET_MODELS
 
@@ -44,13 +59,18 @@ MODEL_BUCKET     = os.getenv("MODEL_BUCKET",     BUCKET_MODELS)
 MODEL_S3_KEY     = os.getenv("MODEL_S3_KEY",     "anomaly/production/current.json")
 MODEL_LOCAL_PATH = os.getenv("ANOMALY_MODEL_PATH", "")
 
-# Seuils z-score pour l'override
-Z_OVERRIDE_SOFT = float(os.getenv("Z_OVERRIDE_SOFT", "3.0"))  # → plancher 75
-Z_OVERRIDE_HARD = float(os.getenv("Z_OVERRIDE_HARD", "5.0"))  # → plancher 90
+# Garde-fou z-score en mode normal
+Z_GUARD_ENABLED = os.getenv("Z_GUARD_ENABLED", "1") not in ("0", "false", "False")
+Z_GUARD_FLOOR   = float(os.getenv("Z_GUARD_FLOOR", "50"))
 
-# Seuil minimum de transactions pour que le z-score soit fiable
-# En-dessous, le std Welford est instable → on ignore l'override z-score
-Z_MIN_TRANSACTIONS = int(os.getenv("Z_MIN_TRANSACTIONS", "10"))
+# Filet de secours en mode dégradé
+Z_DEGRADED_MAX  = float(os.getenv("Z_DEGRADED_MAX", "8.0"))
+
+__all__ = [
+    "AnomalyDetector", "AnomalyResult",
+    "Z_OVERRIDE_SOFT", "Z_OVERRIDE_HARD", "Z_MIN_TRANSACTIONS",
+    "Z_GUARD_ENABLED", "Z_GUARD_FLOOR", "Z_DEGRADED_MAX",
+]
 
 
 # ════════════════════════════════════════════════════════════
@@ -60,22 +80,28 @@ Z_MIN_TRANSACTIONS = int(os.getenv("Z_MIN_TRANSACTIONS", "10"))
 @dataclass
 class AnomalyResult:
     """Résultat de la Couche 2 pour une transaction."""
-    score:          int             # 0-100, score final hybride
-    score_if:       float           # score brut Isolation Forest (normalisé 0-100)
-    zscore_montant: float           # z-score du montant (de compute_features)
-    is_anomaly:     bool            # score >= seuil_anomalie (défaut 50)
-    override_active: bool           # True si le z-score a relevé le score IF
-    model_version:  str
-    features:       dict[str, Any]
+    score:           int              # score Couche 2 final 0-100 (IF + garde-fou)
+    score_if:        float            # score Isolation Forest seul 0-100
+    zscore_montant:  float            # z-score du montant (feature IA-4)
+    is_anomaly:      bool             # score >= ANOMALY_THRESHOLD
+    override_active: bool             # True si le garde-fou / filet z-score a relevé le score
+    model_version:   str
+    features:        dict[str, Any]
+    profile_age_ms:  float | None = None
+    zscores:         dict[str, float] = field(default_factory=dict)   # z par dimension
+    raisons:         list[str]        = field(default_factory=list)   # explications lisibles
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "score":           self.score,
             "score_if":        round(self.score_if, 2),
             "zscore_montant":  round(self.zscore_montant, 4),
+            "zscores":         self.zscores,
+            "raisons":         self.raisons,
             "is_anomaly":      self.is_anomaly,
             "override_active": self.override_active,
             "model_version":   self.model_version,
+            "profile_age_ms":  self.profile_age_ms,
             "features_snapshot": {
                 k: self.features.get(k)
                 for k in ["amount_ratio", "zscore_montant", "nb_tx_1h",
@@ -90,25 +116,19 @@ class AnomalyResult:
 
 class AnomalyDetector:
     """
-    Couche 2 — Détection d'anomalies par Isolation Forest + z-score.
-
-    Suit exactement le même pattern que RuleEngine (IA-4) :
-    - Injection du store pour les tests
-    - Rechargement à chaud via reload_model()
-    - Thread-safe (RLock)
-    - status() pour /health
+    Couche 2 — Isolation Forest + z-scores par abonné.
 
     Usage :
         detector = AnomalyDetector()
         result   = detector.predict(event=tx_dict, profile=profile_dict)
-        print(result.score, result.is_anomaly)
+        print(result.score, result.raisons)
     """
 
     ANOMALY_THRESHOLD = 50  # score >= 50 → is_anomaly = True
 
     def __init__(self, store=None) -> None:
         self._store   = store
-        self._bundle  = None          # {"model": IF, "scaler": RS, "feature_names": [...]}
+        self._bundle  = None          # {"model", "scaler", "feature_names", "score_calibration", "version"}
         self._version = "unknown"
         self._lock    = threading.RLock()
         self._loaded_from = "none"
@@ -118,14 +138,11 @@ class AnomalyDetector:
 
     def reload_model(self) -> str:
         """
-        Recharge le bundle (IF + scaler) depuis :
+        Recharge le bundle depuis :
           1. Fichier local si ANOMALY_MODEL_PATH est défini
           2. MinIO/S3 : lit production/current.json → charge le .pkl pointé
-          3. Mode dégradé si rien de disponible (score = 0 toujours)
-
-        Retourne un message décrivant la source utilisée. Thread-safe.
+          3. Mode dégradé sinon (filet de secours z-score)
         """
-        # ── Tentative 1 : fichier local ───────────────────────
         if MODEL_LOCAL_PATH and os.path.isfile(MODEL_LOCAL_PATH):
             try:
                 bundle, version = self._load_from_file(MODEL_LOCAL_PATH)
@@ -139,7 +156,6 @@ class AnomalyDetector:
             except Exception as exc:
                 logger.warning("Chargement fichier local échoué : %s", exc)
 
-        # ── Tentative 2 : MinIO / S3 ─────────────────────────
         try:
             bundle, version, source = self._load_from_store()
             with self._lock:
@@ -154,12 +170,11 @@ class AnomalyDetector:
                 "Impossible de charger le modèle d'anomalie : %s — mode dégradé", exc
             )
 
-        # ── Mode dégradé ──────────────────────────────────────
         with self._lock:
             self._bundle      = None
             self._version     = "degraded"
             self._loaded_from = "none"
-        return "Mode dégradé — aucun modèle d'anomalie disponible (score=0)"
+        return "Mode dégradé — aucun modèle d'anomalie disponible (filet de secours z-score actif)"
 
     def _load_from_file(self, path: str):
         import pickle
@@ -169,20 +184,12 @@ class AnomalyDetector:
         return bundle, version
 
     def _load_from_store(self):
-        """
-        1. Lit production/current.json pour connaître la clé du modèle actif
-        2. Charge le .pkl correspondant
-        """
         obj_store = self._store or get_object_store()
-
-        # Lire le pointeur de production
-        current = obj_store.load_json(MODEL_BUCKET, MODEL_S3_KEY)
+        current   = obj_store.load_json(MODEL_BUCKET, MODEL_S3_KEY)
         model_key = current["model_key"]
         version   = current.get("version", "unknown")
-
-        bundle = obj_store.load_model(MODEL_BUCKET, model_key)
-        source = f"s3:{MODEL_BUCKET}/{model_key}"
-        return bundle, version, source
+        bundle    = obj_store.load_model(MODEL_BUCKET, model_key)
+        return bundle, version, f"s3:{MODEL_BUCKET}/{model_key}"
 
     # ── Prédiction ───────────────────────────────────────────
 
@@ -192,64 +199,67 @@ class AnomalyDetector:
         profile: dict[str, Any],
     ) -> AnomalyResult:
         """
-        Calcule le score d'anomalie pour une transaction.
+        Calcule le score d'anomalie d'une transaction.
 
-        Paramètres
-        ----------
-        event   : dict — transaction en cours (horodatage, montant, device_id…)
-        profile : dict — profil abonné depuis Redis/DynamoDB
-
-        Retourne
-        --------
-        AnomalyResult avec score 0-100, détail IF et z-score.
+        event   : transaction en cours (horodatage, montant, device_id…)
+        profile : profil abonné AVANT cette transaction (Redis/DynamoDB)
         """
-        # ── Features dérivées ────────────────────────────────
         features = compute_features(event, profile)
-        zscore   = features.get("zscore_montant", 0.0)
+        zreport  = compute_zscores(features, profile)
+        zscore   = float(features.get("zscore_montant", 0.0))
         nb_tx    = int(profile.get("nb_transactions", 0))
+
+        # Fraîcheur du profil (monitoring)
+        profile_age_ms: float | None = None
+        mis_a_jour = profile.get("mis_a_jour_le")
+        ts_event_str = event.get("horodatage", "")
+        if mis_a_jour and ts_event_str:
+            try:
+                from engine.rules.features import _parse_ts as _pts
+                age = (_pts(ts_event_str) - _pts(mis_a_jour)).total_seconds() * 1000
+                profile_age_ms = round(age, 1)
+            except Exception:
+                pass
 
         with self._lock:
             bundle  = self._bundle
             version = self._version
 
-        # ── Mode dégradé ─────────────────────────────────────
-        if bundle is None:
+        def _result(score: float, score_if: float, override: bool,
+                    model_version: str, raisons: list[str]) -> AnomalyResult:
+            s = int(round(min(max(score, 0.0), 100.0)))
             return AnomalyResult(
-                score=0, score_if=0.0,
-                zscore_montant=zscore, is_anomaly=False,
-                override_active=False, model_version="degraded",
-                features=features,
+                score=s, score_if=score_if, zscore_montant=zscore,
+                is_anomaly=s >= self.ANOMALY_THRESHOLD,
+                override_active=override, model_version=model_version,
+                features=features, profile_age_ms=profile_age_ms,
+                zscores=zreport.as_dict(), raisons=raisons,
             )
 
-        # ── Score Isolation Forest ────────────────────────────
-        score_if_norm = self._score_isolation_forest(features, bundle)
+        # ── Compte sans historique : rien de fiable à comparer ──
+        if nb_tx == 0:
+            return _result(0.0, 0.0, False, version, [])
 
-        # ── Formule hybride ───────────────────────────────────
-        # Le z-score override s'active uniquement si l'historique Welford
-        # est suffisamment stable (nb_transactions >= Z_MIN_TRANSACTIONS)
-        zscore_fiable = nb_tx >= Z_MIN_TRANSACTIONS
-        score_final   = score_if_norm
-        override      = False
+        alertes = zreport.alertes(Z_OVERRIDE_SOFT)
+        z_max   = zreport.z_max
 
-        if zscore_fiable:
-            if zscore > Z_OVERRIDE_HARD:
-                score_final = max(score_if_norm, 90)
-                override    = score_final > score_if_norm
-            elif zscore > Z_OVERRIDE_SOFT:
-                score_final = max(score_if_norm, 75)
-                override    = score_final > score_if_norm
+        # ── Mode dégradé : le z-score sert de filet de secours ──
+        if bundle is None:
+            score_fallback = self._score_from_zscore(z_max)
+            raisons = ["modèle IF indisponible — filet de secours z-score"] + alertes
+            return _result(score_fallback, 0.0, score_fallback > 0, "degraded", raisons)
 
-        score_final = int(round(min(max(score_final, 0), 100)))
-
-        return AnomalyResult(
-            score          = score_final,
-            score_if       = score_if_norm,
-            zscore_montant = zscore,
-            is_anomaly     = score_final >= self.ANOMALY_THRESHOLD,
-            override_active = override,
-            model_version  = version,
-            features       = features,
-        )
+        # ── Mode normal : Isolation Forest + garde-fou z-score ──
+        score_if = self._score_isolation_forest(features, bundle)
+        score    = score_if
+        override = False
+        raisons  = list(alertes)
+        if Z_GUARD_ENABLED and z_max >= Z_OVERRIDE_HARD and score_if < Z_GUARD_FLOOR:
+            score    = Z_GUARD_FLOOR
+            override = True
+            raisons.insert(0, f"garde-fou z-score (≥ {Z_OVERRIDE_HARD:g}σ) : "
+                              f"score relevé de {score_if:.0f} à {Z_GUARD_FLOOR:.0f}")
+        return _result(score, score_if, override, version, raisons)
 
     def _score_isolation_forest(
         self,
@@ -257,19 +267,9 @@ class AnomalyDetector:
         bundle: dict,
     ) -> float:
         """
-        Convertit le score_samples de l'IF en score 0-100.
-
-        score_samples retourne des valeurs dans (-0.5, 0).
-        Les valeurs proches de 0     → normales  → score bas
-        Les valeurs proches de -0.5  → anomalies → score élevé
-
-        Normalisation :
-          score_norm = (score_samples - max_normal) / (min_normal - max_normal)
-          clampé à [0, 1] puis multiplié par 100.
-
-        On utilise des constantes empiriques calibrées sur nos données :
-          max_normal ≈ -0.05  (légèrement négatif pour les très normaux)
-          min_normal ≈ -0.50  (seuil d'anomalie de l'IF)
+        Convertit score_samples de l'IF en score 0-100 via la calibration
+        quantile_piecewise du bundle (construite sur les scores TRAIN).
+        Même calcul que evaluate._batch_score : batch et temps réel identiques.
         """
         model  = bundle["model"]
         scaler = bundle["scaler"]
@@ -278,16 +278,35 @@ class AnomalyDetector:
             [[float(features.get(f, 0.0)) for f in FEATURE_NAMES]],
             dtype=np.float32,
         )
-        vec_scaled     = scaler.transform(vec)
-        raw_score      = float(model.score_samples(vec_scaled)[0])
+        raw_score = float(model.score_samples(scaler.transform(vec))[0])
 
-        # Normalisation linéaire : -0.05 → 0, -0.50 → 100
+        calibration = bundle.get("score_calibration", {})
+        if calibration.get("type") == "quantile_piecewise":
+            points = calibration.get("points", [])
+            if len(points) >= 2:
+                x_cal = np.array([float(p[0]) for p in points])
+                y_cal = np.array([float(p[1]) for p in points])
+                normalized = float(np.interp(-raw_score, x_cal, y_cal))
+                return round(float(np.clip(normalized, 0.0, 100.0)), 2)
+
+        # Ancien bundle sans calibration
+        logger.warning(
+            "Bundle sans calibration quantile_piecewise — fallback formule linéaire. "
+            "Réentraîner le modèle pour aligner batch et temps réel."
+        )
         MAX_NORMAL = -0.05
         MIN_NORMAL = -0.50
         normalized = (raw_score - MAX_NORMAL) / (MIN_NORMAL - MAX_NORMAL)
-        normalized = float(np.clip(normalized, 0.0, 1.0)) * 100.0
+        return round(float(np.clip(normalized, 0.0, 1.0)) * 100.0, 2)
 
-        return round(normalized, 2)
+    def _score_from_zscore(self, zscore: float) -> float:
+        """
+        Filet de secours (mode dégradé uniquement) :
+          z <= 0 → 0 ; SOFT (3) → 75 ; HARD (5) → 90 ; >= Z_DEGRADED_MAX (8) → 100
+        """
+        breakpoints = [0.0, Z_OVERRIDE_SOFT, Z_OVERRIDE_HARD, Z_DEGRADED_MAX]
+        scores      = [0.0, 75.0, 90.0, 100.0]
+        return float(np.interp(zscore, breakpoints, scores))
 
     # ── Introspection ─────────────────────────────────────────
 
@@ -302,23 +321,30 @@ class AnomalyDetector:
             return self._version
 
     def score_if_degraded(self) -> bool:
-        """Vérifie que le mode dégradé retourne score=0. Utile pour les tests."""
+        """Vérifie qu'un compte sans historique obtient bien score = 0."""
         from datetime import datetime, timezone
-        ev = {"id_compte": "test", "horodatage": datetime.now(timezone.utc).isoformat(),
-              "montant": 1000.0, "device_id": "", "id_beneficiaire": "", "antenne": ""}
-        result = self.predict(ev, {})
-        return result.score == 0
+        ev = {
+            "id_compte": "_test_degraded_",
+            "horodatage": datetime.now(timezone.utc).isoformat(),
+            "montant": 1000.0, "device_id": "", "id_beneficiaire": "", "antenne": "",
+        }
+        r1 = self.predict(ev, {})
+        r2 = self.predict(ev, {"nb_transactions": 0, "montant_moyen": 50000.0})
+        return r1.score == 0 and r2.score == 0
 
     def status(self) -> dict[str, Any]:
         """Résumé de l'état du détecteur — pour /health."""
         with self._lock:
             return {
-                "ready":        self._bundle is not None,
-                "version":      self._version,
-                "loaded_from":  self._loaded_from,
-                "threshold":    self.ANOMALY_THRESHOLD,
-                "z_soft":       Z_OVERRIDE_SOFT,
-                "z_hard":       Z_OVERRIDE_HARD,
-                "z_min_tx":     Z_MIN_TRANSACTIONS,
-                "n_features":   len(FEATURE_NAMES),
+                "ready":          self._bundle is not None,
+                "version":        self._version,
+                "loaded_from":    self._loaded_from,
+                "threshold":      self.ANOMALY_THRESHOLD,
+                "z_soft":         Z_OVERRIDE_SOFT,
+                "z_hard":         Z_OVERRIDE_HARD,
+                "z_guard_enabled": Z_GUARD_ENABLED,
+                "z_guard_floor":  Z_GUARD_FLOOR,
+                "z_degraded_max": Z_DEGRADED_MAX,
+                "z_min_tx":       Z_MIN_TRANSACTIONS,
+                "n_features":     len(FEATURE_NAMES),
             }

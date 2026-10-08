@@ -127,9 +127,25 @@ class TestAnomalyLayer(unittest.TestCase):
     def test_01_build_dataset(self):
         """Vérifie la construction du dataset de features."""
         ds = build_dataset(self.events, profiles_override=self.profiles)
-        self.assertEqual(ds.n_train + ds.n_test, 120)
+        excluded = (ds.meta["n_fraud_excluded_overlap"]
+                    + ds.meta["n_atypical_excluded_overlap"]
+                    + ds.meta["n_sans_historique_exclus"])
+        self.assertEqual(ds.n_train + ds.n_val + ds.n_test + excluded, 120)
+        self.assertEqual(ds.meta["n_subscribers_overlap"], 0)
         self.assertEqual(ds.X_train.shape[1], len(FEATURE_NAMES))
         self.assertEqual(len(ds.y_test), ds.n_test)
+        self.assertEqual(len(ds.y_val), ds.n_val)
+
+    def test_04_zscore_garde_fou(self):
+        """Un montant à > 5σ de l'habitude relève le score au plancher du garde-fou."""
+        from engine.anomaly.detector import Z_GUARD_FLOOR
+        ds = build_dataset(self.events, profiles_override=self.profiles)
+        detector = self._create_fitted_detector(ds)
+        ev = dict(self.events[0], montant=10000.0 + 20 * 2000.0)  # z = 20
+        res = detector.predict(ev, self.profiles[ev["id_compte"]])
+        self.assertGreaterEqual(res.score, Z_GUARD_FLOOR)
+        self.assertGreater(res.zscores["montant"], 5)
+        self.assertTrue(any("montant" in r for r in res.raisons))
 
     def test_02_train_and_evaluate(self):
         """Vérifie l'entraînement et l'évaluation du modèle."""

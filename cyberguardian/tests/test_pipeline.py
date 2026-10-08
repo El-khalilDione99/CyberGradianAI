@@ -99,21 +99,15 @@ def pipeline():
         }
         for _ in range(8):
             sc = build_transaction_normale(c, rng, ts)
-            events += [e.payload for e in sc.evenements if e.stream == "transactions"]
+            events += [{**e.payload, "stream": e.stream} for e in sc.evenements]
             ts += timedelta(hours=3)
         builders = [build_sim_swap_simple, build_sim_swap_cascade, build_pic_otp,
                     build_gros_montant_legitime, build_voyage_legitime,
                     build_transaction_normale]
         sc = builders[i % 6](c, rng, ts)
-        for ev in sc.evenements:
-            if ev.stream == "sim-events":
-                profiles[c.id_compte]["ts_dernier_swap"] = ev.payload["horodatage"]
-                profiles[c.id_compte]["nb_swaps_30j"] += 1
-            elif ev.stream == "otp-events":
-                profiles[c.id_compte]["nb_otp_1h"] += 1
-                profiles[c.id_compte]["nb_otp_24h"] += 1
-            elif ev.stream == "transactions":
-                events.append(ev.payload)
+        # Les 3 flux sont rejoués : le swap SIM et les OTP arrivent dans le
+        # profil au moment où ils se produisent, comme en production.
+        events += [{**e.payload, "stream": e.stream} for e in sc.evenements]
 
     store = InMemoryStore()
     train_if(build_if_ds(events=events, profiles_override=profiles),
@@ -182,7 +176,7 @@ class TestChargement:
 
     def test_couche1_chargee(self, pipeline):
         c1, _, _ = pipeline
-        assert c1.rules_count == 10, f"Attendu 10 règles, obtenu {c1.rules_count}"
+        assert c1.rules_count == 12, f"Attendu 12 règles (rules.yaml v2.0), obtenu {c1.rules_count}"
 
     def test_couche2_prete(self, pipeline):
         _, c2, _ = pipeline

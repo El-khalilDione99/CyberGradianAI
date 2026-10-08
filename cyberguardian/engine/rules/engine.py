@@ -159,6 +159,23 @@ class RuleEngine:
         """
         env = os.getenv("ENV", "local")
 
+        # ── Service de scoring : stockage objet d'abord ───────
+        # RULES_SOURCE=s3 : les règles viennent du stockage objet (MinIO / S3),
+        # le fichier local ne sert que de repli. Indispensable pour qu'un
+        # rules.yaml déposé dans S3 soit pris en compte par /reload-model.
+        if os.getenv("RULES_SOURCE", "file").lower() == "s3":
+            try:
+                rules, version = self._load_from_object_store()
+                with self._lock:
+                    self._rules       = rules
+                    self._version     = version
+                    self._loaded_from = f"s3:{RULES_BUCKET}/{RULES_S3_KEY}"
+                msg = f"Règles chargées depuis S3 {RULES_BUCKET}/{RULES_S3_KEY} (v{version}, {len(rules)} règles)"
+                logger.info(msg)
+                return msg
+            except Exception as exc:
+                logger.error("Règles S3 indisponibles (%s) — repli sur le fichier local", exc)
+
         # ── Tentative 1 : fichier local ───────────────────────
 
         if os.path.isfile(RULES_PATH):
