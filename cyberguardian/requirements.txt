@@ -11,7 +11,7 @@ numpy==1.26.4
 pandas==2.2.2
 
 # ── Streaming local (Kafka) ─────────────────────────────────
-kafka-python==2.0.2
+kafka-python-ng==2.2.3   # remplace kafka-python 2.0.2, cassé sous Python 3.12 (kafka.vendor.six)
 
 # ── Feature store local (Redis) ─────────────────────────────
 redis==5.0.4

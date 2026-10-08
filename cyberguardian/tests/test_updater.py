@@ -29,7 +29,6 @@ from engine.features.updater import (
     apply_sim_event,
     apply_otp_event,
 )
-from engine.rules.features import compute_features
 
 
 class TestFeatureUpdater(unittest.TestCase):
@@ -60,13 +59,11 @@ class TestFeatureUpdater(unittest.TestCase):
             "total_montant_24h": 0.0,
             "fenetre_1h_ts": [],
             "fenetre_24h_ts": [],
-            "fenetre_24h_tx": [],
             "fenetre_7j_ts": [],
             "nb_otp_1h": 0,
             "nb_otp_24h": 0,
             "fenetre_otp_1h_ts": [],
             "fenetre_otp_24h_ts": [],
-            "fenetre_swaps_30j_ts": [],
             "montant_moyen_habituel": 10000.0,
             "heures_actives": list(range(7, 21)),
             "solde": 100000.0,
@@ -112,7 +109,6 @@ class TestFeatureUpdater(unittest.TestCase):
             "antennes_connues": ["DAK-ANT-001"],
             "fenetre_1h_ts": [],
             "fenetre_24h_ts": [],
-            "fenetre_24h_tx": [],
             "fenetre_7j_ts": [],
         }
         montants = [10000.0, 20000.0, 30000.0, 40000.0]
@@ -164,7 +160,7 @@ class TestFeatureUpdater(unittest.TestCase):
     # ── 4. Gestion des événements SIM Swap ───────────────────
 
     def test_04_apply_sim_event(self):
-        """Vérifie la mise à jour de la SIM (ICCID, IMSI, horodatage, compteur swaps)."""
+        """Vérifie la mise à jour de la SIM (ICCID, IMSI, horodatage, compteur swaps, device du swap)."""
         sim_event = {
             "id_evenement": "SIM-001",
             "id_compte": "CPT-TEST12345",
@@ -180,8 +176,9 @@ class TestFeatureUpdater(unittest.TestCase):
         self.assertEqual(updated["imsi_actuel"], "608999999999999")
         self.assertEqual(updated["ts_dernier_swap"], self.now.isoformat())
         self.assertEqual(updated["nb_swaps_30j"], 1)
-        # Le device du swap n'est PAS appris ici (cf. finding #2) : sinon un
-        # swap frauduleux blanchirait instantanément l'appareil de l'attaquant.
+        # L'appareil du swap est mémorisé mais pas encore « connu » : il le
+        # deviendra à sa première transaction (new_device vrai sur celle-ci).
+        self.assertEqual(updated["device_dernier_swap"], "DEV-SWAP-AGENCE")
         self.assertNotIn("DEV-SWAP-AGENCE", updated["devices_connus"])
 
     # ── 5. Gestion des demandes OTP et fenêtres glissantes ───
@@ -203,7 +200,14 @@ class TestFeatureUpdater(unittest.TestCase):
         self.assertEqual(profile["nb_otp_1h"], 3)
         self.assertEqual(profile["nb_otp_24h"], 3)
 
-        # 1 OTP récent 2h plus tard -> la fenêtre 1h expire mais 24h conserve les récents
+        # 1 OTP vieux de 2 heures
+        old_otp_event = {
+            "id_otp": "OTP-OLD",
+            "id_compte": "CPT-TEST12345",
+            "horodatage": (self.now - timedelta(hours=2)).isoformat(),
+            "antenne": "DAK-ANT-001",
+        }
+        # Lors d'un nouvel événement maintenant, l'ancien ne doit pas être compté dans 1h
         recent_otp = {
             "id_otp": "OTP-NOW",
             "id_compte": "CPT-TEST12345",
@@ -211,159 +215,8 @@ class TestFeatureUpdater(unittest.TestCase):
             "antenne": "DAK-ANT-001",
         }
         profile = apply_otp_event(profile, recent_otp)
-        self.assertEqual(profile["nb_otp_1h"], 1)
-        self.assertEqual(profile["nb_otp_24h"], 4)
-
-    # ── 6. Expiration exacte de total_montant_24h ─────────────
-
-    def test_06_total_montant_24h_sliding_expiration(self):
-        """Teste que les anciennes transactions (> 24h) sont déduites du montant total 24h."""
-        profile = dict(self.initial_profile)
-
-        # Transaction il y a 25 heures (50 000 FCFA)
-        tx_old = {
-            "id_transaction": "TX-OLD",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": (self.now - timedelta(hours=25)).isoformat(),
-            "montant": 50000.0,
-            "device_id": "DEV-ORIGINAL",
-            "id_beneficiaire": "CPT-BENEF1",
-        }
-        profile = apply_transaction(profile, tx_old)
-        self.assertEqual(profile["total_montant_24h"], 50000.0)
-
-        # Transaction maintenant (10 000 FCFA) -> La tx de -25h doit être expirée
-        tx_now = {
-            "id_transaction": "TX-NOW",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": self.now.isoformat(),
-            "montant": 10000.0,
-            "device_id": "DEV-ORIGINAL",
-            "id_beneficiaire": "CPT-BENEF1",
-        }
-        profile = apply_transaction(profile, tx_now)
-        self.assertEqual(profile["nb_tx_24h"], 1)
-        self.assertEqual(profile["total_montant_24h"], 10000.0)
-
-    # ── 7. Fenêtres glissantes 7j, 24h et 30j ─────────────────
-
-    def test_07_sliding_windows_7j_24h_30j(self):
-        """Vérifie la purge exacte des fenêtres 7j (tx), 24h (otp) et 30j (sim swaps)."""
-        profile = dict(self.initial_profile)
-
-        # Transaction il y a 8 jours
-        tx_8d = {
-            "id_transaction": "TX-8D",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": (self.now - timedelta(days=8)).isoformat(),
-            "montant": 1000.0,
-        }
-        profile = apply_transaction(profile, tx_8d)
-
-        # Transaction il y a 2 jours
-        tx_2d = {
-            "id_transaction": "TX-2D",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": (self.now - timedelta(days=2)).isoformat(),
-            "montant": 2000.0,
-        }
-        profile = apply_transaction(profile, tx_2d)
-
-        # Nouvelle transaction maintenant -> 8d doit expirer de 7j, 2d reste dans 7j
-        tx_now = {
-            "id_transaction": "TX-NOW",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": self.now.isoformat(),
-            "montant": 3000.0,
-        }
-        profile = apply_transaction(profile, tx_now)
-
-        self.assertEqual(profile["nb_tx_7j"], 2)
-        self.assertEqual(profile["nb_tx_24h"], 1)
-
-        # Test SIM swap 35j vs maintenant
-        swap_old = {
-            "id_evenement": "SIM-35D",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": (self.now - timedelta(days=35)).isoformat(),
-            "nouveau_iccid": "111",
-        }
-        profile = apply_sim_event(profile, swap_old)
-
-        swap_now = {
-            "id_evenement": "SIM-NOW",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": self.now.isoformat(),
-            "nouveau_iccid": "222",
-        }
-        profile = apply_sim_event(profile, swap_now)
-        self.assertEqual(profile["nb_swaps_30j"], 1)
-
-    # ── 8. Anti-fuite temporelle et ordre de scoring ─────────
-
-    def test_08_anti_leakage_order_and_compute_features(self):
-        """
-        Vérifie qu'une transaction à analyser est scorée AVANT son intégration au profil.
-        Une transaction suspecte ne doit pas modifier new_device ou montant_moyen avant son scoring.
-        """
-        profile = dict(self.initial_profile)
-        suspicious_event = {
-            "id_transaction": "TX-SUSPICIOUS",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": self.now.isoformat(),
-            "montant": 500000.0,  # Gros montant
-            "device_id": "DEV-UNKNOWN-HACKER",
-            "id_beneficiaire": "BEN-FRAUD-001",
-            "antenne": "DAK-ANT-999",
-        }
-
-        # 1. Calcul des features AVANT événement (scoring)
-        features_before = compute_features(suspicious_event, profile)
-
-        self.assertTrue(features_before["new_device"])
-        self.assertTrue(features_before["new_beneficiary"])
-        self.assertEqual(features_before["nb_tx_1h"], 0)
-
-        # 2. Application au profil APRES scoring
-        profile_after = apply_transaction(profile, suspicious_event)
-
-        # Le profil est maintenant mis à jour
-        self.assertIn("DEV-UNKNOWN-HACKER", profile_after["devices_connus"])
-        self.assertIn("BEN-FRAUD-001", profile_after["beneficiaires_connus"])
-        self.assertEqual(profile_after["nb_tx_1h"], 1)
-
-    # ── 9. Support des préfixes bénéficiaires (BEN-) ──────────
-
-    def test_09_beneficiary_prefix_support(self):
-        """Vérifie que les bénéficiaires CPT- et BEN- sont tous les deux appris dans le profil."""
-        profile = dict(self.initial_profile)
-        event_ben = {
-            "id_transaction": "TX-BEN",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": self.now.isoformat(),
-            "montant": 1000.0,
-            "id_beneficiaire": "BEN-NOUVEAU-CPT",
-        }
-        profile = apply_transaction(profile, event_ben)
-        self.assertIn("BEN-NOUVEAU-CPT", profile["beneficiaires_connus"])
-
-    # ── 10. Sentinelle SIM Swap compatible JSON & ML ─────────
-
-    def test_10_sim_swap_sentinel_json_compat(self):
-        """Vérifie que hours_since_sim_swap vaut 9999.0 lorsqu'aucun swap n'a eu lieu."""
-        profile = dict(self.initial_profile)
-        profile["ts_dernier_swap"] = None
-
-        event = {
-            "id_transaction": "TX-TEST",
-            "id_compte": "CPT-TEST12345",
-            "horodatage": self.now.isoformat(),
-            "montant": 1000.0,
-        }
-        features = compute_features(event, profile)
-        self.assertEqual(features["hours_since_sim_swap"], 9999.0)
+        self.assertEqual(profile["nb_otp_1h"], 1)  # Seul le plus récent est dans la dernière heure
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

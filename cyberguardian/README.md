@@ -19,8 +19,8 @@ Transaction Entrante
         │
         ▼
 ┌───────────────────────────────────────┐
-│  Couche 1 — Règles Expertes (IA-4)    │  10 règles YAML (R01–R10)
-│  (Détection immédiate basée sur l'EDA)│  Rechargement à chaud S3 / MinIO
+│  Couche 1 — Règles Expertes (IA-4)    │  12 règles YAML (R01–R12, v2.0)
+│  (Recalibrées sur simulateur réaliste)│  Rechargement à chaud S3 / MinIO
 └──────────────────┬────────────────────┘
                    │
                    ▼
@@ -36,8 +36,13 @@ Transaction Entrante
 └──────────────────┬────────────────────┘
                    │
                    ▼
-        Score Final 0 – 100 → PASS / CHALLENGE / BLOCK
+   Score final = max(S1, 0,1·S2 + 0,9·S3)  →  PASS / CHALLENGE / BLOCK (+ alerte ≥ 90)
 ```
+
+Le score final prend le maximum entre les règles (S1) et une combinaison pondérée de
+l'Isolation Forest (S2, poids 0,1) et du XGBoost (S3, poids 0,9). Poids choisis par
+balayage : au-delà de 0,1, la Couche 2 dégrade les performances du score combiné ; elle
+reste utile pour expliquer les alertes (z-scores) et comme filet de secours.
 
 ### ⚡ Matrice d'Architecture (Local ↔ AWS Cloud)
 
@@ -62,12 +67,15 @@ CyberGradianAI/
     ├── simulator/                    # IA-1 — Simulateur de données & attaques ✅
     ├── engine/
     │   ├── features/                 # IA-3 — Worker Feature Updater (Welford O(1)) ✅
-    │   ├── rules/                    # IA-4 — Couche 1 : Moteur de règles YAML R01-R10 ✅
+    │   ├── rules/                    # IA-4 — Couche 1 : Moteur de règles YAML R01-R12 (v2.0) ✅
     │   ├── anomaly/                  # IA-5 — Couche 2 : Isolation Forest + Z-score ✅
     │   ├── supervised/               # IA-6 — Couche 3 : XGBoost + SHAP ✅
-    │   └── scoring_api/              # IA-7 — API FastAPI de scoring temps réel (en cours)
-    ├── interfaces/                   # Abstractions Cloud (Kafka/Redis ↔ Kinesis/DynamoDB)
-    ├── tests/                        # 🧪 Suites de 60 tests unitaires & d'intégration (100% OK) ✅
+    │   ├── scoring/                  # IA-7 — Cœur du moteur : 3 couches + agrégation + décision ✅
+    │   └── scoring_api/              # IA-7 — Service FastAPI (/v1/score, /reload-model, /health, /metrics) ✅
+    ├── interfaces/                   # Abstractions Cloud (Kafka/Redis ↔ Kinesis/DynamoDB, registre RDS)
+    ├── docs/                         # Dictionnaire des features, contrat d'API du scoring
+    ├── notebooks/                    # Validation des Couches 2 et 3 (1 500 abonnés, temps réel)
+    ├── tests/                        # 🧪 87 tests unitaires & d'intégration (100% OK) ✅
     ├── run_train_couche2.py          # Script d'entraînement Couche 2 (Isolation Forest)
     ├── run_train_couche3.py          # Script d'entraînement Couche 3 (XGBoost + SHAP)
     ├── docker-compose.yml            # Stack locale (Redpanda, Redis, Postgres, MinIO)
@@ -80,13 +88,13 @@ CyberGradianAI/
 
 | Jalon | Périmètre | Statut |
 |---|---|:---:|
-| **IA-1** | Simulateur de trafic & attaques (500 abonnés, 23 934 événements, 7 scénarios) | ✅ **Validé** |
+| **IA-1** | Simulateur de trafic & attaques (5 types de fraude dont 1 sans swap, légitimes inhabituels ; 1 500 abonnés de référence) | ✅ **Validé** |
 | **IA-2** | Dictionnaire de features (12 features temps réel) | ✅ **Validé** |
 | **IA-3** | Feature Updater (Welford $O(1)$, fenêtres 1h/24h/7j, sets Redis) | ✅ **Validé** |
-| **IA-4** | Couche 1 — Moteur de Règles Expertes (10 règles R01-R10, hot-reload) | ✅ **Validé** |
+| **IA-4** | Couche 1 — Moteur de Règles Expertes (12 règles R01-R12 v2.0, hot-reload) | ✅ **Validé** |
 | **IA-5** | Couche 2 — Détection d'anomalies (Isolation Forest + RobustScaler + Z-Score) | ✅ **Validé** |
-| **IA-6** | Couche 3 — XGBoost supervisé + Explicabilité SHAP (scale_pos_weight) | ✅ **Validé** |
-| **IA-7** | API FastAPI de Scoring temps réel + `/reload-rules` | ⏳ **En cours** |
+| **IA-6** | Couche 3 — XGBoost supervisé + SHAP, champion/challenger, table `models` | ✅ **Validé** |
+| **IA-7** | Moteur de scoring intégré : service FastAPI, 3 couches, agrégation, seuils 30/70/90, décisions en base, métriques, `/reload-model` sécurisé | ✅ **Terminé en local** (AWS : à faire) |
 | **IA-8** | Harnais d'évaluation automatisé & CI/CD GitHub Actions | ⏳ **Prochainement** |
 | **IA-9** | Infra Terraform AWS (Kinesis, DynamoDB, S3, ECS Fargate) | ⏳ **Prochainement** |
 | **IA-10**| Fiche technique & dossier jury | ⏳ **Prochainement** |
@@ -129,17 +137,27 @@ docker run -d --name cg_feature_updater \
 docker compose --profile simulator run --rm simulator --mode batch --reset-profiles
 ```
 
-### 5. Entraîner les Couches d'IA (Couches 2 & 3)
+### 5. Entraîner et publier les Couches d'IA dans MinIO (Couches 2 & 3)
 
 ```bash
-# Entraîner la Couche 2 (Isolation Forest)
-python run_train_couche2.py
-
-# Entraîner la Couche 3 (XGBoost + SHAP)
-python run_train_couche3.py
+# 1 500 abonnés = volume de référence (500 donne des résultats trop optimistes)
+SIM_NB_ABONNES=1500 python run_train_couche2.py   # Isolation Forest → cg-models/anomaly/
+SIM_NB_ABONNES=1500 python run_train_couche3.py   # XGBoost + SHAP  → cg-models/xgboost/ (+ table models)
 ```
 
-### 6. Lancer la suite de tests unitaires & d'intégration (60/60 tests)
+### 6. Lancer le service de scoring (IA-7)
+
+```bash
+docker compose up -d scoring-api          # charge règles et modèles depuis MinIO au démarrage
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/v1/score -H "Content-Type: application/json" \
+     -d '{"id_transaction":"TXN-1","id_compte":"CPT-...","horodatage":"2026-07-14T09:19:02+00:00","montant":45000}'
+curl -X POST http://localhost:8000/reload-model -H "X-API-Key: change-me-local"
+```
+
+Contrat d'API complet (entrées, sorties, agrégation, erreurs) : [`docs/contrat_api_scoring.md`](docs/contrat_api_scoring.md).
+
+### 7. Lancer la suite de tests unitaires & d'intégration (87 tests)
 
 ```bash
 python -m pytest tests/ -v
@@ -156,6 +174,9 @@ python -m pytest tests/ -v
 | **70 – 89** | `BLOCK` | Transaction bloquée + alerte système |
 | **90 – 100** | `BLOCK` | Blocage immédiat + alerte prioritaire fraudeur |
 
+Les seuils s'appliquent au **score final agrégé** ; aucune couche ne décide seule.
+Chaque décision est enregistrée dans la table `decisions` (PostgreSQL local / RDS).
+
 ---
 
 ## ⚙️ Variables d'Environnement Clés
@@ -167,7 +188,34 @@ python -m pytest tests/ -v
 | `REDIS_HOST` | `redis` | Serveur Redis Feature Store |
 | `REDIS_PORT` | `6379` | Port Redis |
 | `MINIO_ENDPOINT` | `localhost:19000` | Stockage S3/MinIO local |
+| `POSTGRES_DSN` | `postgresql://…:15432/cyberguardian` | Base relationnelle (décisions, modèles, labels) |
+| `SCORE_WEIGHT_IF` / `SCORE_WEIGHT_XGB` | `0.1` / `0.9` | Poids de la combinaison Couche 2 / Couche 3 |
+| `RULES_SOURCE` | `s3` (service) / `file` | Source des règles au démarrage et au rechargement |
+| `RELOAD_API_KEY` | `change-me-local` | Clé de l'endpoint `/reload-model` |
+| `METRICS_BACKEND` | `local` | `local` (GET /metrics) ou `cloudwatch` |
+| `SIM_NB_ABONNES` | `500` (référence : `1500`) | Volume de la simulation |
 | `SEED` | `42` | Seed globale garantissant la reproductibilité |
+
+---
+
+## ⚠️ Limites connues (à traiter avant la mise en production réelle)
+
+1. **Concurrence entre le service de scoring et le Feature Updater.** Le service *lit* le
+   profil de l'abonné dans Redis / DynamoDB ; c'est le Feature Updater (IA-3) qui le met à
+   jour à partir du flux d'événements. Les deux tournent en parallèle, sans coordination :
+   si une transaction est scorée avant que le Feature Updater ait traité le swap SIM ou les
+   OTP qui la précèdent, elle est évaluée sur un profil incomplet (swap récent invisible,
+   donc signal le plus discriminant absent). Non testé avec les deux services actifs
+   simultanément. Pistes : garantir l'ordre de traitement par abonné (même partition),
+   exposer l'âge du profil (`profile_age_ms`) et le surveiller, ou appliquer les événements
+   SIM/OTP en attente avant le scoring.
+2. **Mode AWS non exécuté.** Le passage vers S3, RDS, DynamoDB et CloudWatch est codé et
+   piloté par variables d'environnement, mais n'a été testé qu'en local (MinIO,
+   PostgreSQL, Redis). Infrastructure ECS Fargate / Terraform non réalisée.
+3. **Vol de téléphone déverrouillé** (fraude sans swap SIM) : peu détecté par les trois
+   couches — limite acceptée (même appareil, même lieu, pas de swap).
+4. **Données simulées** : toutes les performances sont mesurées sur le simulateur ; elles
+   devront être revalidées sur du trafic réel.
 
 ---
 

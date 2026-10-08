@@ -17,12 +17,17 @@ Différences avec evaluate.py (IA-5) :
   - Ajout de la section SHAP globale (importance moyenne |SHAP|)
   - Rapport contient les hyperparamètres du modèle
 
+_batch_score() réutilise dataset.X_test, calculé par
+engine.supervised.dataset.build_dataset() avec compute_features() — la même
+fonction que XGBoostDetector.predict(). Les scores batch sont donc ceux que
+produirait le détecteur en production pour ces transactions.
+
 Usage :
     from engine.supervised.evaluate import evaluate
     from engine.supervised.dataset  import build_dataset
     from engine.supervised.detector import XGBoostDetector
 
-    dataset  = build_dataset(events=events)
+    dataset  = build_dataset(events=events, profiles_override=profils_initiaux)
     detector = XGBoostDetector()
     report   = evaluate(detector, dataset)
     print(report["auc_pr"], report["recall_at_1pct_fpr"])
@@ -42,7 +47,7 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
-from engine.supervised.dataset  import SupervisedDatasetResult, XGB_FEATURE_NAMES
+from engine.supervised.dataset import SupervisedDatasetResult, XGB_FEATURE_NAMES
 from engine.supervised.detector import XGBoostDetector
 from interfaces.store import get_object_store, BUCKET_REPORTS
 
@@ -190,7 +195,7 @@ def _batch_score(
     detector: XGBoostDetector,
     dataset:  SupervisedDatasetResult,
 ) -> list[float]:
-    """Score en batch sur X_test — sans recalculer les features."""
+    """Probabilités en batch sur X_test (features déjà calculées par compute_features)."""
     with detector._lock:
         bundle = detector._bundle
 
@@ -205,7 +210,7 @@ def _batch_score(
         return model.predict_proba(dataset.X_test)[:, 1].tolist()
 
     # xgb.Booster (SageMaker)
-    feature_names = bundle.get("feature_names", XGB_FEATURE_NAMES)
+    feature_names = bundle.get("feature_names", dataset.feature_names)
     dmat = xgb.DMatrix(dataset.X_test, feature_names=feature_names)
     return model.predict(dmat).tolist()
 
@@ -247,10 +252,11 @@ def _compute_global_shap(
 
         mean_abs = np.abs(sv).mean(axis=0)
         total    = mean_abs.sum() or 1.0
+        feature_names = dataset.feature_names or XGB_FEATURE_NAMES
         result   = []
         for i in np.argsort(mean_abs)[::-1][:10]:
             result.append({
-                "feature":    XGB_FEATURE_NAMES[i],
+                "feature":    feature_names[i],
                 "mean_shap":  round(float(mean_abs[i]), 6),
                 "importance": round(float(mean_abs[i] / total), 4),
             })
@@ -288,9 +294,9 @@ def _log_summary(report: dict) -> None:
         report["score_mean_fraud"], report["score_mean_legit"],
         report["score_separation"],
     )
-    if report["auc_pr"] < 0.5:
+    if report["auc_pr"] < 2 * report["fraud_rate_test"]:
         logger.warning(
-            "AUC-PR=%.3f < 0.5 — modèle peu discriminant. "
+            "AUC-PR=%.3f < 2 × taux de fraude (%.3f) — modèle peu discriminant. "
             "Vérifier scale_pos_weight et les features.",
-            report["auc_pr"],
+            report["auc_pr"], report["fraud_rate_test"],
         )

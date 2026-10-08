@@ -31,6 +31,28 @@ class StreamConsumer(ABC):
     def consume(self, stream: str, batch_size: int = 100) -> list[dict[str, Any]]:
         pass
 
+    def drain(
+        self,
+        stream: str,
+        timeout_ms: int = 3000,
+        max_empty_polls: int = 3,
+    ) -> list[dict[str, Any]]:
+        """
+        Draine complètement un topic depuis le début.
+        Implémentation par défaut : appels répétés à consume() jusqu'à vide.
+        Les sous-classes peuvent la surcharger pour une implémentation native.
+        """
+        messages    = []
+        empty_count = 0
+        while empty_count < max_empty_polls:
+            batch = self.consume(stream, batch_size=10_000)
+            if batch:
+                messages.extend(batch)
+                empty_count = 0
+            else:
+                empty_count += 1
+        return messages
+
 
 # ── Implémentation locale : Kafka / Redpanda ─────────────────────────────────
 
@@ -82,6 +104,52 @@ class KafkaConsumer(StreamConsumer):
         for partition_records in records.values():
             for msg in partition_records:
                 messages.append(msg.value)
+        return messages
+
+    def drain(
+        self,
+        stream: str,
+        timeout_ms: int = 3000,
+        max_empty_polls: int = 3,
+    ) -> list[dict[str, Any]]:
+        """
+        Draine complètement un topic Kafka depuis le début (earliest).
+        Lit en boucle jusqu'à ce que `max_empty_polls` polls consécutifs
+        ne retournent rien — signe qu'on a atteint la fin du topic.
+
+        Utilisé dans les notebooks pour récupérer toutes les données
+        publiées par le simulateur et entraîner les modèles sur les
+        vraies données Kafka.
+
+        Paramètres
+        ----------
+        stream         : nom du topic à vider
+        timeout_ms     : attente par poll en ms (défaut 3000)
+        max_empty_polls: nb de polls vides consécutifs avant d'arrêter
+                         (défaut 3 — assure qu'on ne s'arrête pas trop tôt)
+        """
+        current = self._consumer.subscription() or set()
+        if stream not in current:
+            self._consumer.subscribe(list(current) + [stream])
+
+        messages   = []
+        empty_count = 0
+
+        while empty_count < max_empty_polls:
+            records = self._consumer.poll(
+                timeout_ms=timeout_ms, max_records=10_000
+            )
+            batch = []
+            for partition_records in records.values():
+                for msg in partition_records:
+                    batch.append(msg.value)
+
+            if batch:
+                messages.extend(batch)
+                empty_count = 0
+            else:
+                empty_count += 1
+
         return messages
 
     def close(self) -> None:
