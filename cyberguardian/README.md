@@ -36,13 +36,16 @@ Transaction Entrante
 └──────────────────┬────────────────────┘
                    │
                    ▼
-   Score final = round(0,05·S1 + 0,40·S2 + 0,55·S3)  →  PASS / CHALLENGE / BLOCK (+ alerte ≥ 90)
+   Score final = round(max(S1, 0,1·S2 + 0,9·S3))  →  PASS / CHALLENGE / BLOCK (+ alerte ≥ 90)
 ```
 
-Le score final est une moyenne pondérée des trois couches : les règles (S1, poids 0,05),
-l'Isolation Forest (S2, poids 0,40) et le XGBoost (S3, poids 0,55). Revalidé sur le jeu
-de test complet (1 500 abonnés, 15 602 transactions, 120 fraudes) : 83,3 % des fraudes
-détectées, 2,8 % de fausses alertes — voir `docs/contrat_api_scoring.md` §2.
+Le score final prend le maximum entre les règles (S1) et une combinaison pondérée de
+l'Isolation Forest (S2, poids 0,1) et du XGBoost (S3, poids 0,9) : une règle forte déclenche
+un blocage à elle seule, sans attendre l'accord des deux autres couches — important pour un
+SIM swap, où le CHALLENGE (OTP) ne protège pas vraiment (l'attaquant a la carte SIM).
+Comparée à une fusion pondérée des trois couches sur le même jeu de test (1 500 abonnés,
+15 602 transactions, 120 fraudes), cette formule détecte autant de fraudes au total (83,3 %)
+mais en *bloque* 76,7 % contre 62,5 % — voir `docs/contrat_api_scoring.md` §2.
 
 **`POST /v1/score` (service `scoring_api`) est le point d'entrée officiel pour l'équipe
 web/mobile** : c'est lui qu'elle doit appeler pour obtenir une décision, pas reconstruire
@@ -193,7 +196,7 @@ Chaque décision est enregistrée dans la table `decisions` (PostgreSQL local / 
 | `REDIS_PORT` | `6379` | Port Redis |
 | `MINIO_ENDPOINT` | `localhost:19000` | Stockage S3/MinIO local |
 | `POSTGRES_DSN` | `postgresql://…:15432/cyberguardian` | Base relationnelle (décisions, modèles, labels) |
-| `FUSION_WEIGHT_RULES` / `FUSION_WEIGHT_ANOMALY` / `FUSION_WEIGHT_SUPERVISED` | `0.05` / `0.40` / `0.55` | Poids des Couches 1 / 2 / 3 |
+| `SCORE_WEIGHT_IF` / `SCORE_WEIGHT_XGB` | `0.1` / `0.9` | Poids de la combinaison Couche 2 / Couche 3 |
 | `RULES_SOURCE` | `s3` (service) / `file` | Source des règles au démarrage et au rechargement |
 | `RELOAD_API_KEY` | `change-me-local` | Clé de l'endpoint `/reload-model` |
 | `METRICS_BACKEND` | `local` | `local` (GET /metrics) ou `cloudwatch` |

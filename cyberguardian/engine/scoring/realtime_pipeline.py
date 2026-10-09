@@ -10,7 +10,7 @@ Pour chaque transaction :
   2. Couche 1 — RuleEngine.evaluate()         → S1 (score max des règles déclenchées)
   3. Couche 2 — AnomalyDetector.predict()     → S2 (Isolation Forest + garde-fou z-score)
   4. Couche 3 — XGBoostDetector.predict()     → S3 (probabilité × 100, 3 raisons SHAP)
-  5. Agrégation : score_final = round(w1·S1 + w2·S2 + w3·S3)   } engine/scoring/aggregator.py
+  5. Agrégation : score_final = round(max(S1, w2·S2 + w3·S3))   } engine/scoring/aggregator.py
   6. Décision   : < 30 PASS · 30-69 CHALLENGE · ≥ 70 BLOCK        } (fonctions pures)
 
 Ce module orchestre (profil, couches, résultat) ; la formule et les seuils
@@ -34,8 +34,7 @@ from engine.rules.engine        import RuleEngine
 from engine.supervised.detector import XGBoostDetector
 from engine.features.updater    import apply_transaction
 from engine.scoring.aggregator  import (          # formule et seuils : fonctions pures
-    agreger, decider, FORMULE, SEUIL_CHALLENGE, SEUIL_BLOCK, SEUIL_ALERTE,
-    WEIGHT_RULES, WEIGHT_ANOMALY, WEIGHT_SUPERVISED,
+    agreger, decider, FORMULE, SEUIL_CHALLENGE, SEUIL_BLOCK, SEUIL_ALERTE, WEIGHT_IF, WEIGHT_XGB,
 )
 from interfaces.store           import get_feature_store
 
@@ -103,8 +102,8 @@ class RealtimePipeline:
             "alerte_prioritaire": alerte,
             "score_final":        score_final,
             "seuils":             {"challenge": SEUIL_CHALLENGE, "block": SEUIL_BLOCK, "alerte": SEUIL_ALERTE},
-            "agregation":         {"formule": FORMULE, "w1_regles": WEIGHT_RULES, "w2_anomalie": WEIGHT_ANOMALY,
-                                   "w3_supervise": WEIGHT_SUPERVISED, "score_combine": combine},
+            "agregation":         {"formule": FORMULE, "w2_anomalie": WEIGHT_IF,
+                                   "w3_supervise": WEIGHT_XGB, "score_combine": combine},
             "couche1":            c1,
             "couche2":            c2,
             "couche3":            c3,
@@ -166,7 +165,7 @@ class RealtimePipeline:
                         "nb_regles": self._rules.rules_count, "source": self._rules.loaded_from},
             "couche2": self._if.status(),
             "couche3": self._xgb.status(),
-            "agregation": {"w1_regles": WEIGHT_RULES, "w2_anomalie": WEIGHT_ANOMALY, "w3_supervise": WEIGHT_SUPERVISED},
+            "agregation": {"w2_anomalie": WEIGHT_IF, "w3_supervise": WEIGHT_XGB},
             "seuils": {"challenge": SEUIL_CHALLENGE, "block": SEUIL_BLOCK, "alerte": SEUIL_ALERTE},
         }
 

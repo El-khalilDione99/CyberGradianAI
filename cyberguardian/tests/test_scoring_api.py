@@ -76,10 +76,10 @@ def _payload(ev):
 
 # ── Agrégation et politique de seuils ─────────────────────────
 
-def test_agregation_ponderee_trois_couches():
-    assert agreger(92, 10, 20, 0.05, 0.40, 0.55) == (20, 19.6)  # 0,05·92 + 0,40·10 + 0,55·20
-    assert agreger(0, 50, 100) == (75, 75.0)                    # 0,40·50 + 0,55·100
-    assert agreger(100, 100, 100) == (100, 100.0)               # plafond
+def test_agregation_max_regles_et_ponderation():
+    assert agreger(92, 10, 20, 0.1, 0.9) == (92, 19.0)          # une règle forte l'emporte
+    assert agreger(0, 50, 100, 0.1, 0.9) == (95, 95.0)          # 0,1·50 + 0,9·100
+    assert agreger(25, 0, 0, 0.1, 0.9) == (25, 0.0)
 
 
 def test_agregateur_pur_sans_fastapi_ni_entree_sortie():

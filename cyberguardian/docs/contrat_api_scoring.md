@@ -7,15 +7,15 @@ pipeline de scoring, complété par la Couche 1 (règles). Toute évolution ult�
 rester **additive** (nouveaux champs optionnels uniquement) ; supprimer ou renommer un
 champ impose une version v2.
 
-> **Mise à jour du 2026-10-08** : après fusion avec le travail de l'équipe IA sur la
-> fusion des scores, la formule d'agrégation est passée d'un `max(S1, w2·S2 + w3·S3)` à
-> une **moyenne pondérée des trois couches**, `round(w1·S1 + w2·S2 + w3·S3)`, avec
-> `w1 = 0,05`, `w2 = 0,40`, `w3 = 0,55`. Les noms de champs du contrat ne changent pas
-> (`agregation`, `score_combine`, etc.) ; seules la formule et les clés de poids évoluent
-> (`w1_regles` s'ajoute à `w2_anomalie` / `w3_supervise`). Revalidée par
-> `scripts/verifier_service_ia7.py` sur le jeu de test complet (1 500 abonnés,
-> 15 602 transactions, 120 fraudes) : 83,3 % des fraudes détectées (62,5 % bloquées),
-> 2,8 % de fausses alertes (0,2 % bloquées à tort) — voir §2 et §8.
+> **Mise à jour du 2026-10-09** : la formule d'agrégation reste `max(S1, w2·S2 + w3·S3)`,
+> avec `w2 = 0,1`, `w3 = 0,9` — inchangée depuis la version d'origine. Entre-temps, une
+> fusion pondérée (`round(0,05·S1 + 0,40·S2 + 0,55·S3)`) a été testée puis abandonnée :
+> comparée au `max` sur le même jeu de test et les mêmes modèles
+> (`scratch/comparer_fusion.py`), elle détectait autant de fraudes au total (83,3 %) mais
+> n'en **bloquait** que 62,5 %, contre **76,7 %** pour le `max`. Pour un SIM swap, le
+> CHALLENGE (OTP) est une protection illusoire — l'attaquant a la carte SIM, c'est lui qui
+> reçoit le code. Le `max` laisse une règle forte déclencher un blocage à elle seule, sans
+> attendre l'accord des deux autres couches ; c'est ce qui fait la différence. Voir §2 et §8.
 >
 > **Ce service est le point de contact officiel pour l'équipe web/mobile.** C'est
 > `POST /v1/score` qu'elle doit appeler pour obtenir une décision, pas reconstruire son
@@ -71,7 +71,7 @@ Les champs inconnus sont ignorés. Exemple :
 | `alerte_prioritaire` | bool | `true` si `score_final ≥ 90` |
 | `score_final` | int 0-100 | Score agrégé |
 | `seuils` | objet | `{"challenge": 30, "block": 70, "alerte": 90}` |
-| `agregation` | objet | `{"formule": "round(w1*S1 + w2*S2 + w3*S3)", "w1_regles": 0.05, "w2_anomalie": 0.40, "w3_supervise": 0.55, "score_combine": float}` |
+| `agregation` | objet | `{"formule": "max(S1, w2*S2 + w3*S3)", "w2_anomalie": 0.1, "w3_supervise": 0.9, "score_combine": float}` |
 | `couche1` | objet | `score` (int), `regles` : liste de `{rule_id, nom, score}` déclenchées, `version` |
 | `couche2` | objet | `score` (float 0-100, garde-fou inclus), `score_if`, `garde_fou_actif` (bool), `zscores` (objet), `raisons` (liste de textes), `version`, `statut` |
 | `couche3` | objet | `score` (float 0-100), `probabilite` (0-1), `shap_top3` : liste de `{feature, value, shap, direction}`, `version`, `statut` |
@@ -89,10 +89,10 @@ Exemple :
   "id_compte": "CPT-25c30f12e100",
   "scored_at": "2026-09-25T10:12:44.120Z",
   "decision": "BLOCK",
-  "alerte_prioritaire": false,
-  "score_final": 83,
+  "alerte_prioritaire": true,
+  "score_final": 92,
   "seuils": {"challenge": 30, "block": 70, "alerte": 90},
-  "agregation": {"formule": "round(w1*S1 + w2*S2 + w3*S3)", "w1_regles": 0.05, "w2_anomalie": 0.40, "w3_supervise": 0.55, "score_combine": 82.73},
+  "agregation": {"formule": "max(S1, w2*S2 + w3*S3)", "w2_anomalie": 0.1, "w3_supervise": 0.9, "score_combine": 88.31},
   "couche1": {"score": 92, "regles": [{"rule_id": "R01", "nom": "SIM swap récent + montant supérieur à l'habitude", "score": 92},
                                       {"rule_id": "R11", "nom": "SIM swap très récent", "score": 60}], "version": "2.0"},
   "couche2": {"score": 71.3, "score_if": 71.3, "garde_fou_actif": false, "zscores": {"montant": 3.4},
@@ -120,16 +120,24 @@ Exemple :
 - `S2` : score de la Couche 2 (Isolation Forest + garde-fou z-score).
 - `S3` : score de la Couche 3 = probabilité XGBoost × 100.
 
-**`score_final = round( w1·S1 + w2·S2 + w3·S3 )`**, avec `w1 = 0,05`, `w2 = 0,40`, `w3 = 0,55`
-(fusion pondérée des trois couches — même méthode que l'API de l'app mobile).
+**`score_final = round( max( S1 , w2·S2 + w3·S3 ) )`**, avec `w2 = 0,1`, `w3 = 0,9`.
 
-Revalidé sur le jeu de test complet (1 500 abonnés simulés, 15 602 transactions, 120
-fraudes, via `scripts/verifier_service_ia7.py`) : **83,3 % des fraudes détectées**
-(CHALLENGE ou BLOCK), dont 62,5 % bloquées directement ; **2,8 % de fausses alertes**
-sur les légitimes, dont 0,2 % bloquées à tort. Un petit balayage des poids sur un jeu
-indépendant montre qu'au-delà de w2 = 0,20-0,30, chaque point ajouté à la Couche 2 coûte
-plus de friction qu'il n'apporte de rappel ; 0,40 reste un choix défendable mais pas le
-point optimal du compromis rappel / friction (voir `scratch/revalider_fusion.py`).
+Comparé à d'autres formules sur le même jeu de test (1 500 abonnés simulés, 300 jamais vus
+à l'entraînement, 15 602 transactions, 120 fraudes, via `scratch/comparer_fusion.py`) :
+
+| Formule | Rappel BLOCK | Rappel total | Friction totale |
+|---|---|---|---|
+| **`max(S1, 0,1·S2+0,9·S3)` — retenue** | **76,7 %** | 83,3 % | 3,42 % |
+| Fusion pondérée `0,05·S1+0,40·S2+0,55·S3` | 62,5 % | 83,3 % | 2,80 % |
+| `max(S1, S2, S3)` sans poids | 80,0 % | 86,7 % | 10,67 % |
+
+La fusion pondérée détecte autant au total mais ne *bloque* que 62,5 % des fraudes (le
+reste part en CHALLENGE) ; or pour un SIM swap, le CHALLENGE (OTP) est une protection
+illusoire — l'attaquant a la carte SIM, c'est lui qui reçoit le code. Le `max` laisse une
+règle forte déclencher un blocage à elle seule, sans attendre l'accord des deux autres
+couches, d'où un meilleur taux de blocage réel pour une friction comparable. Le
+`max(S1, S2, S3)` sans poids détecte plus mais avec une friction trois fois plus élevée :
+écarté.
 
 | `score_final` | `decision` | `alerte_prioritaire` |
 |---|---|---|
@@ -205,7 +213,7 @@ En local (`METRICS_BACKEND=local`), les métriques restent en mémoire et sont l
 |---|---|---|
 | `ENV` | `local` | `local` (MinIO, Redis) ou `aws` (S3, DynamoDB) |
 | `SCORE_THRESHOLD_LOW` / `_MED` / `_HIGH` | 30 / 70 / 90 | Seuils CHALLENGE / BLOCK / alerte |
-| `FUSION_WEIGHT_RULES` / `FUSION_WEIGHT_ANOMALY` / `FUSION_WEIGHT_SUPERVISED` | 0.05 / 0.40 / 0.55 | Poids w1 / w2 / w3 |
+| `SCORE_WEIGHT_IF` / `SCORE_WEIGHT_XGB` | 0.1 / 0.9 | Poids w2 / w3 |
 | `POSTGRES_DSN` | — | Base des décisions (PostgreSQL local ou RDS) |
 | `METRICS_BACKEND` | `local` | `local` ou `cloudwatch` |
 | `RELOAD_API_KEY` | — | Clé de `/reload-model` (endpoint désactivé si absente) |
