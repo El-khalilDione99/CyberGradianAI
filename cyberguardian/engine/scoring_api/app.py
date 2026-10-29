@@ -4,6 +4,7 @@ engine/scoring_api/app.py
 Service FastAPI de scoring temps réel (IA-7). Contrat : docs/contrat_api_scoring.md.
 
   POST /v1/score       scorer une transaction (3 couches + agrégation + décision)
+                       (en-tête X-API-Key exigé si SCORING_API_KEY est définie)
   POST /reload-model   recharger règles et modèles (en-tête X-API-Key)
   GET  /health         état des couches, de la base des décisions et des métriques
   GET  /metrics        métriques courantes (latence p50/p99, décisions, scores)
@@ -16,12 +17,20 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+RACINE = Path(__file__).resolve().parents[2]
+load_dotenv(RACINE / ".env.local")
+load_dotenv(RACINE / ".env")
+
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from engine.scoring.realtime_pipeline import RealtimePipeline
@@ -60,10 +69,13 @@ class Transaction(BaseModel):
 
 
 def create_app(pipeline: RealtimePipeline | None = None, decisions: DecisionStore | None = None,
-               metrics: Metrics | None = None, reload_api_key: str | None = None) -> FastAPI:
+               metrics: Metrics | None = None, reload_api_key: str | None = None,
+               scoring_api_key: str | None = None) -> FastAPI:
     """Fabrique de l'application (injection des dépendances pour les tests)."""
     etat: dict[str, Any] = {}
     cle = reload_api_key if reload_api_key is not None else os.getenv("RELOAD_API_KEY", "")
+    # Clé des consommateurs (app mobile, dashboard) : vide = /v1/score ouvert (local)
+    cle_scoring = scoring_api_key if scoring_api_key is not None else os.getenv("SCORING_API_KEY", "")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -78,9 +90,19 @@ def create_app(pipeline: RealtimePipeline | None = None, decisions: DecisionStor
         etat["metrics"].arreter()
 
     app = FastAPI(title="CyberGuardian — moteur de scoring", version="1.0.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.post("/v1/score")
-    def score(tx: Transaction, taches: BackgroundTasks) -> dict[str, Any]:
+    def score(tx: Transaction, taches: BackgroundTasks,
+              x_api_key: str | None = Header(default=None)) -> dict[str, Any]:
+        if cle_scoring and not (x_api_key and secrets.compare_digest(x_api_key, cle_scoring)):
+            raise HTTPException(401, "Clé d'API absente ou incorrecte (en-tête X-API-Key).")
         resultat = etat["pipeline"].score(tx.model_dump())
         etat["metrics"].enregistrer(resultat["latence_ms"], resultat["score_final"], resultat["decision"])
         taches.add_task(etat["decisions"].record, resultat)        # écrit après la réponse
@@ -98,10 +120,13 @@ def create_app(pipeline: RealtimePipeline | None = None, decisions: DecisionStor
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        pipe, base = etat["pipeline"], etat["decisions"].healthy()
+        pipe, store = etat["pipeline"], etat["decisions"]
+        # Sans POSTGRES_DSN, l'enregistrement est désactivé volontairement : pas une panne
+        active = bool(getattr(store, "dsn", True))
+        base = store.healthy() if active else True
         return {"status": "ok" if pipe.is_fully_ready and base else "degrade",
                 "couches": pipe.status(),
-                "base_decisions": "ok" if base else "indisponible",
+                "base_decisions": ("ok" if base else "indisponible") if active else "desactivee",
                 "metriques": etat["metrics"].backend}
 
     @app.get("/metrics")

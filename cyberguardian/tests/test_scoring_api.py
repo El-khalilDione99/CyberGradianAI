@@ -166,6 +166,18 @@ def test_reload_model_desactive_sans_cle(monde):
         assert c.post("/reload-model", headers={"X-API-Key": "x"}).status_code == 503
 
 
+def test_score_protege_par_cle_consommateur(monde):
+    store, init, tx = monde
+    app = create_app(pipeline=RealtimePipeline(store=store, feature_store=DictFeatureStore(dict(init))),
+                     decisions=DecisionStore("sqlite://"), metrics=Metrics("local"),
+                     reload_api_key=CLE, scoring_api_key="cle-app")
+    with TestClient(app) as c:
+        assert c.post("/v1/score", json=_payload(tx[0])).status_code == 401
+        assert c.post("/v1/score", json=_payload(tx[0]), headers={"X-API-Key": "mauvaise"}).status_code == 401
+        assert c.post("/v1/score", json=_payload(tx[0]), headers={"X-API-Key": "cle-app"}).status_code == 200
+        assert c.get("/health").status_code == 200
+
+
 def test_health_et_metrics(client, monde):
     for ev in monde[2][:20]:
         client.post("/v1/score", json=_payload(ev))
