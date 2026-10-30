@@ -1,0 +1,57 @@
+# Construit l'image scoring_api, la pousse dans ECR et relance le service ECS.
+# Le rôle AWS est créé par cyberguardian/infra/terraform/github.tf (OIDC, aucune clé stockée).
+name: Image scoring-api
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, deploiement-aws]
+    paths:
+      - "cyberguardian/engine/**"
+      - "cyberguardian/interfaces/**"
+      - "cyberguardian/requirements.txt"
+      - ".github/workflows/scoring-api-image.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-3
+  AWS_ROLE: arn:aws:iam::334156771104:role/cyberguardian-github-deploy
+  ECR_REPOSITORY: cyberguardian/scoring-api
+  ECS_CLUSTER: cyberguardian
+  ECS_SERVICE: scoring-api
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Affiche les claims du jeton OIDC (sans la signature) : utile si AWS refuse le rôle
+      - name: Identité OIDC envoyée à AWS
+        run: |
+          curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+            | python3 -c "import sys,json,base64; p=json.load(sys.stdin)['value'].split('.')[1]; c=json.loads(base64.urlsafe_b64decode(p+'='*(-len(p)%4))); print('sub =', c['sub']); print('aud =', c['aud'])"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Construire et pousser l'image
+        working-directory: cyberguardian
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          docker build -f engine/scoring_api/Dockerfile -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" .
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+
+      - name: Relancer le service ECS
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force-new-deployment > /dev/null
+          echo "Nouveau déploiement lancé sur $ECS_CLUSTER/$ECS_SERVICE"

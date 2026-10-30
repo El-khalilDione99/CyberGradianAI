@@ -78,18 +78,45 @@ class DynamoDBFeatureStore(FeatureStore):
         table_name = os.getenv("DYNAMODB_TABLE_USER_PROFILES", "user_profiles")
         self._table = dynamodb.Table(table_name)
 
+    # Le profil est stocké en JSON dans l'attribut `profile`, comme dans Redis :
+    # DynamoDB refuse les float Python et renvoie des Decimal, que le moteur
+    # ne sait pas combiner avec des float.
     def get_profile(self, msisdn_hash: str) -> dict[str, Any]:
         response = self._table.get_item(Key={"msisdn_hash": msisdn_hash})
-        item = response.get("Item", {})
-        # Supprimer la clé primaire du profil retourné
-        item.pop("msisdn_hash", None)
-        return item
+        item = response.get("Item")
+        if not item or "profile" not in item:
+            return {}
+        return json.loads(item["profile"])
 
     def set_profile(self, msisdn_hash: str, profile: dict[str, Any]) -> None:
-        self._table.put_item(Item={"msisdn_hash": msisdn_hash, **profile})
+        self._table.put_item(Item={"msisdn_hash": msisdn_hash, "profile": json.dumps(profile)})
 
     def delete_profile(self, msisdn_hash: str) -> None:
         self._table.delete_item(Key={"msisdn_hash": msisdn_hash})
+
+
+# ── AWS : instantané JSON dans S3 (sans DynamoDB) ──────────
+
+class S3SnapshotFeatureStore(FeatureStore):
+    """
+    Profils lus une fois au démarrage depuis un fichier JSON {id_compte: profil}
+    dans S3, puis servis depuis la mémoire. Les écritures restent en mémoire :
+    adapté tant que les profils ne sont pas mis à jour en continu sur AWS.
+    """
+
+    def __init__(self) -> None:
+        bucket = os.getenv("S3_BUCKET_MODELS", "cg-models")
+        key = os.getenv("PROFILES_S3_KEY", "profiles/profiles.json")
+        self._profiles: dict[str, dict[str, Any]] = S3ObjectStore().load_json(bucket, key)
+
+    def get_profile(self, msisdn_hash: str) -> dict[str, Any]:
+        return dict(self._profiles.get(msisdn_hash, {}))
+
+    def set_profile(self, msisdn_hash: str, profile: dict[str, Any]) -> None:
+        self._profiles[msisdn_hash] = profile
+
+    def delete_profile(self, msisdn_hash: str) -> None:
+        self._profiles.pop(msisdn_hash, None)
 
 
 # ════════════════════════════════════════════════════════════
@@ -188,6 +215,8 @@ class S3ObjectStore(ObjectStore):
 
 def get_feature_store() -> FeatureStore:
     if ENV == "aws":
+        if os.getenv("FEATURE_STORE", "dynamodb").lower() == "s3":
+            return S3SnapshotFeatureStore()
         return DynamoDBFeatureStore()
     return RedisFeatureStore()
 

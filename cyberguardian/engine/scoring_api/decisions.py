@@ -48,25 +48,33 @@ class DecisionStore:
     def __init__(self, dsn: str | None = None) -> None:
         self.dsn = dsn if dsn is not None else os.getenv("POSTGRES_DSN", "")
         self._engine = None
+        self._get_engine()
+
+    def _get_engine(self):
+        if self._engine is not None:
+            return self._engine
         if not self.dsn:
             logger.warning("POSTGRES_DSN absent — les décisions ne sont pas enregistrées")
-            return
+            return None
         kwargs: dict[str, Any] = {"pool_pre_ping": True}
         if self.dsn in ("sqlite://", "sqlite:///:memory:"):
             kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
         try:
             self._engine = create_engine(self.dsn, future=True, **kwargs)
             _metadata.create_all(self._engine)
+            return self._engine
         except Exception as exc:
             logger.error("Base des décisions indisponible : %s", exc)
             self._engine = None
+            return None
 
     def record(self, r: dict[str, Any]) -> None:
         """Enregistre une réponse de scoring (format du contrat v1)."""
-        if self._engine is None:
+        eng = self._get_engine()
+        if eng is None:
             return
         try:
-            with self._engine.begin() as conn:
+            with eng.begin() as conn:
                 conn.execute(decisions_table.insert().values(
                     id_transaction=r["id_transaction"], id_compte=r["id_compte"],
                     scored_at=datetime.fromisoformat(r["scored_at"]),
@@ -84,10 +92,11 @@ class DecisionStore:
             logger.error("Écriture de la décision %s échouée : %s", r.get("id_transaction"), exc)
 
     def healthy(self) -> bool:
-        if self._engine is None:
+        eng = self._get_engine()
+        if eng is None:
             return False
         try:
-            with self._engine.connect() as conn:
+            with eng.connect() as conn:
                 conn.execute(text("SELECT 1"))
             return True
         except Exception:
@@ -95,8 +104,9 @@ class DecisionStore:
 
     def last(self, n: int = 10) -> list[dict[str, Any]]:
         """Dernières décisions (tests et diagnostic)."""
-        if self._engine is None:
+        eng = self._get_engine()
+        if eng is None:
             return []
-        with self._engine.connect() as conn:
+        with eng.connect() as conn:
             q = select(decisions_table).order_by(decisions_table.c.id.desc()).limit(n)
             return [dict(row._mapping) for row in conn.execute(q)]

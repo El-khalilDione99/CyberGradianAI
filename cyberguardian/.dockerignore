@@ -1,0 +1,13 @@
+.venv/
+**/__pycache__/
+.pytest_cache/
+.vscode/
+.git/
+notebooks/
+scratch/
+brain/
+docs/
+rapports_verification/
+infra/
+.env
+.env.local
