@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 SEED = int(os.getenv("SIM_SEED", "42"))
 
 # ── Population ───────────────────────────────────────────────
-NB_ABONNES = int(os.getenv("SIM_NB_ABONNES", "500"))
+NB_ABONNES = int(os.getenv("SIM_NB_ABONNES", "1500"))
 
 # ── Fenêtre temporelle ───────────────────────────────────────
 DUREE_SIMULATION_JOURS = int(os.getenv("SIM_DUREE_JOURS", "30"))

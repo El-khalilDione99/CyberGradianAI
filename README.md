@@ -193,7 +193,7 @@ Chaque décision est enregistrée dans la table `decisions` (PostgreSQL local / 
 | `RULES_SOURCE` | `s3` (service) / `file` | Source des règles au démarrage et au rechargement |
 | `RELOAD_API_KEY` | `change-me-local` | Clé de l'endpoint `/reload-model` |
 | `METRICS_BACKEND` | `local` | `local` (GET /metrics) ou `cloudwatch` |
-| `SIM_NB_ABONNES` | `500` (référence : `1500`) | Volume de la simulation |
+| `SIM_NB_ABONNES` | `1500` (volume de référence) | Volume de la simulation |
 | `SEED` | `42` | Seed globale garantissant la reproductibilité |
 
 ---

@@ -30,7 +30,7 @@ from simulator.config import (
 )
 
 assert DUREE_SIMULATION_JOURS == 30,     "Durée simulation doit être 30 jours"
-assert NB_ABONNES == 500,               "Nombre d'abonnés doit être 500"
+assert NB_ABONNES == 1500,              "Nombre d'abonnés doit être 1500 (volume de référence)"
 assert SEED == 42,                      "Seed doit être 42"
 assert set(SEGMENTS.keys()) == {"bas", "moyen", "haut"}
 assert len(REGIONS) == 14
