@@ -2,10 +2,10 @@
 # Le workflow .github/workflows/scoring-api-image.yml assume ce rôle pour
 # pousser l'image dans ECR puis relancer le service ECS.
 
-variable "github_repository" {
-  description = "Dépôt GitHub autorisé à pousser l'image (owner/nom)"
-  type        = string
-  default     = "El-khalilDione99/CyberGradianAI"
+variable "github_repositories" {
+  description = "Dépôts GitHub autorisés à pousser l'image (owner/nom), par exemple le dépôt d'origine et un fork"
+  type        = list(string)
+  default     = ["El-khalilDione99/CyberGradianAI"]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -29,7 +29,7 @@ data "aws_iam_policy_document" "github_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:*"]
+      values   = [for r in var.github_repositories : "repo:${r}:*"]
     }
   }
 }
