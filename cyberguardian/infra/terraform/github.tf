@@ -3,9 +3,16 @@
 # pousser l'image dans ECR puis relancer le service ECS.
 
 variable "github_repositories" {
-  description = "Dépôts GitHub autorisés à pousser l'image (owner/nom), par exemple le dépôt d'origine et un fork"
+  # GitHub envoie désormais le sub sous la forme repo:owner@id_owner/nom@id_depot:...
+  # On garde aussi l'ancienne forme (owner/nom) pour les comptes qui l'utilisent encore.
+  description = "Dépôts GitHub autorisés à pousser l'image, tels qu'ils apparaissent dans le sub OIDC"
   type        = list(string)
-  default     = ["El-khalilDione99/CyberGradianAI", "khalilldion99/CyberGradianAI"]
+  default = [
+    "El-khalilDione99/CyberGradianAI",
+    "El-khalilDione99@150396064/CyberGradianAI@1333300719",
+    "khalilldion99/CyberGradianAI",
+    "khalilldion99@350281002/CyberGradianAI@1439720053",
+  ]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
