@@ -78,6 +78,14 @@ Le script doit lister `rules/rules.yaml`, `anomaly/production/current.json`,
 
 ## 3. Construire et pousser l'image
 
+**Variante sans Docker sur le PC (recommandée si le disque est plein) :** le workflow GitHub Actions
+`.github/workflows/scoring-api-image.yml` construit l'image sur les serveurs de GitHub, la pousse dans
+ECR et relance le service. Il se déclenche à chaque push qui touche le moteur, ou à la main depuis
+l'onglet Actions. Son rôle AWS (`cyberguardian-github-deploy`, sans clé stockée) est créé par
+`terraform apply` à l'étape 4 : faire l'étape 4 d'abord, puis lancer le workflow.
+
+Sinon, en local :
+
 ```powershell
 aws ecr get-login-password --region eu-west-3 | docker login --username AWS --password-stdin $ECR.Split("/")[0]
 docker build --platform linux/amd64 -f engine/scoring_api/Dockerfile -t "${ECR}:latest" .
