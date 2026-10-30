@@ -5,7 +5,7 @@
 variable "github_repositories" {
   description = "Dépôts GitHub autorisés à pousser l'image (owner/nom), par exemple le dépôt d'origine et un fork"
   type        = list(string)
-  default     = ["El-khalilDione99/CyberGradianAI"]
+  default     = ["El-khalilDione99/CyberGradianAI", "khalilldion99/CyberGradianAI"]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
