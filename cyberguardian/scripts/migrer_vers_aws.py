@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import boto3
@@ -26,6 +27,7 @@ import redis
 from dotenv import load_dotenv
 
 RACINE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RACINE))  # pour importer simulator/
 load_dotenv(RACINE / ".env.local")
 
 
@@ -53,12 +55,22 @@ def _redis() -> redis.Redis:
                        port=int(os.getenv("REDIS_PORT", "16379")), decode_responses=True)
 
 
-def copier_profils_s3(bucket: str, cle: str, region: str) -> int:
+def _ids_abonnes(nb: int) -> set[str]:
+    from simulator.subscribers import generate_subscribers
+    return {c.id_compte for c in generate_subscribers(nb)}
+
+
+def copier_profils_s3(bucket: str, cle: str, region: str, nb_abonnes: int | None = None) -> int:
     r = _redis()
     # Même format que S3SnapshotFeatureStore : {id_compte: profil}
     profils = {k.removeprefix("profile:"): json.loads(v)
                for k in r.scan_iter(match="profile:*", count=500)
                if (v := r.get(k)) is not None}
+    if nb_abonnes:
+        # Ne garder que les abonnés du simulateur (seed fixe), pas les restes d'anciennes simulations
+        ids = _ids_abonnes(nb_abonnes)
+        print(f"  {len(profils)} profils dans Redis, {len(ids & profils.keys())} retenus sur {len(ids)} abonnés")
+        profils = {k: v for k, v in profils.items() if k in ids}
     boto3.client("s3", region_name=region).put_object(
         Bucket=bucket, Key=cle, Body=json.dumps(profils).encode("utf-8"))
     return len(profils)
@@ -87,6 +99,7 @@ def main() -> None:
     p.add_argument("--region", default=os.getenv("AWS_DEFAULT_REGION", "eu-west-3"))
     p.add_argument("--bucket-source", default=os.getenv("MINIO_BUCKET_MODELS", "cg-models"))
     p.add_argument("--sans-profils", action="store_true", help="ne copier que les modèles et règles")
+    p.add_argument("--abonnes", type=int, help="ne copier que les profils des N abonnés du simulateur (ex. 1500)")
     a = p.parse_args()
 
     print(f"Modèles et règles : MinIO {a.bucket_source} → S3 {a.bucket}")
@@ -99,7 +112,7 @@ def main() -> None:
         print(f"→ {copier_profils(a.table, a.region)} profils copiés")
     else:
         print(f"Profils abonnés : Redis → s3://{a.bucket}/{a.cle_profils}")
-        print(f"→ {copier_profils_s3(a.bucket, a.cle_profils, a.region)} profils copiés")
+        print(f"→ {copier_profils_s3(a.bucket, a.cle_profils, a.region, a.abonnes)} profils copiés")
 
 
 if __name__ == "__main__":
